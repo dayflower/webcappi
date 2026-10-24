@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webcappi-config
+data:
+  config.json: |
+    {
+      "listen": ":8080",
+      "browser_path": "/opt/chrome/chrome",
+      "no_sandbox": false,
+      "work_dir": "/work/captures",
+      "profiles": {
+        "reader": {
+          "revision": "reader-20261023-1",
+          "browser_version": "156.0.8078.47",
+          "user_data_dir": "/bundles/reader/user-data",
+          "profile_directory": "Default",
+          "extensions": ["/bundles/reader/extensions/verification"],
+          "ready_selector": "#webcappi-extension-ready"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webcappi
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: webcappi}
+  template:
+    metadata:
+      labels: {app: webcappi}
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: install-bundle
+          image: webcappi-profiles:reader-20261023-1
+          command: ["sh", "-c", "cp -R /bundle/reader /out/reader"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 100m, memory: 64Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          volumeMounts:
+            - {name: bundles, mountPath: /out}
+      containers:
+        - name: api
+          image: webcappi:dev
+          args: ["webcappi", "serve", "-config", "/etc/webcappi/config.json"]
+          ports:
+            - {name: http, containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 500m, memory: 512Mi, ephemeral-storage: 1Gi}
+            limits: {cpu: "2", memory: 2Gi, ephemeral-storage: 4Gi}
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: config, mountPath: /etc/webcappi, readOnly: true}
+            - {name: bundles, mountPath: /bundles, readOnly: true}
+            - {name: work, mountPath: /work}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: config
+          configMap: {name: webcappi-config}
+        - name: bundles
+          emptyDir: {sizeLimit: 1Gi}
+        - name: work
+          emptyDir: {sizeLimit: 2Gi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webcappi
+spec:
+  type: ClusterIP
+  selector: {app: webcappi}
+  ports:
+    - {name: http, port: 8080, targetPort: http}

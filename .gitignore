@@ -1,0 +1,16 @@
+# Build and test outputs.
+/bin/
+/webcappi
+/webcappi.exe
+*.test
+*.test.exe
+/coverage.out
+/coverage.html
+
+# Local runtime settings and captured output.
+/config.json
+/capture.png
+
+# Generated browser artifacts and prepared profile bundles.
+/artifacts/
+/bundles/

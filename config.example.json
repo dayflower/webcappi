@@ -1,0 +1,28 @@
+{
+  "listen": ":8080",
+  "browser_path": "/opt/chrome/chrome",
+  "no_sandbox": false,
+  "work_dir": "/work/captures",
+  "concurrency": 1,
+  "queue_size": 8,
+  "max_requests": 64,
+  "capture_timeout_seconds": 30,
+  "cache_ttl_seconds": 60,
+  "cache_max_bytes": 67108864,
+  "cache_max_entries": 128,
+  "max_width": 4096,
+  "max_height": 4096,
+  "max_pixels": 8388608,
+  "max_profile_bytes": 536870912,
+  "max_png_bytes": 41943040,
+  "profiles": {
+    "reader": {
+      "revision": "reader-20261023-1",
+      "browser_version": "156.0.8078.47",
+      "user_data_dir": "/bundles/reader/user-data",
+      "profile_directory": "Default",
+      "extensions": ["/bundles/reader/extensions/verification"],
+      "ready_selector": "#webcappi-extension-ready"
+    }
+  }
+}

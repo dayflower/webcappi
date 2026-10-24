@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Webcappi verification",
+  "version": "1.0.0",
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA49s5+I0SbRDjOoA8oJWcWF121f9OFYEMaTeokvcwjvnYOf0o/1OpmyI4TPUJbiDSCUJTxvMr+z1t46U+jbyRItoqm+mnLdcr5D2LF47coyE7B68SDBpmet/G8NqR+eRWU/eN5TkF7ZR4Gn5Oh7xoATRSxb78ko56Ef2qgsNV7r+JcPnAUsFDTK4TdYjd9G2PHqQaUio/20MIIGz0n16sSeOR9DiX3mMklZzoB/9doE1+JbDjNW5XIo9RtFcpG/4VMjFcxbIHX2VDdpe7r+Kh7mW/8Ye5ym6dSigSdhR/QxrEhgcQcxGl4nVYZ55SZohwF3xjIgHcw6D9xMutdJvoBwIDAQAB"
+}

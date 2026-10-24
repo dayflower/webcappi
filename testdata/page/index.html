@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Webcappi multilingual fixture</title>
+<style>
+  body {box-sizing:border-box;margin:0;padding:76px 24px 12px;background:#eef2f6;font:18px/1.35 sans-serif;color:#172b3a}
+  h1 {margin:0 0 8px;font-size:22px}
+  table {width:100%;border-collapse:collapse}
+  th {width:108px;text-align:left;font-size:12px;font-weight:400;color:#526575}
+  td {height:26px;padding:0;line-height:26px}
+  footer {display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;color:#526575}
+  img {width:24px;height:24px}
+</style>
+<h1>Multilingual capture</h1>
+<table>
+  <tr><th>Latin</th><td id="sample-latin">ABC xyz 0123456789 · café Straße · <span lang="vi">Tiếng Việt</span></td></tr>
+  <tr><th>Japanese</th><td id="sample-ja" lang="ja">こんにちは、世界。漢字・ひらがな・カタカナ</td></tr>
+  <tr><th>Chinese (SC)</th><td id="sample-sc" lang="zh-CN">你好，世界。简体中文与汉字</td></tr>
+  <tr><th>Chinese (TC)</th><td id="sample-tc" lang="zh-TW">你好，世界。繁體中文與漢字</td></tr>
+  <tr><th>Korean</th><td id="sample-ko" lang="ko">안녕하세요, 세계. 한국어와 한글</td></tr>
+  <tr><th>Arabic / RTL</th><td id="sample-ar" lang="ar" dir="rtl">مرحبا بالعالم — <bdi dir="ltr">webcappi 123</bdi></td></tr>
+  <tr><th>Hebrew / RTL</th><td id="sample-he" lang="he" dir="rtl">שלום עולם — <bdi dir="ltr">webcappi 123</bdi></td></tr>
+  <tr><th>Thai</th><td id="sample-th" lang="th">สวัสดีชาวโลก ภาษาไทย</td></tr>
+  <tr><th>Hindi</th><td id="sample-hi" lang="hi">नमस्ते दुनिया हिन्दी भाषा</td></tr>
+  <tr><th>Cyrillic</th><td id="sample-ru" lang="ru">Привет, мир! Русский текст</td></tr>
+  <tr><th>Greek</th><td id="sample-el" lang="el">Γεια σου κόσμε! Ελληνικό κείμενο</td></tr>
+  <tr><th>Symbols / emoji</th><td id="sample-symbols">€ £ ¥ ₹ ₩ · ← ↑ → ↓ ↔ ✓ ★ ∑ ∞ · <span id="sample-emoji">😀 🎉 🌏</span></td></tr>
+</table>
+<footer><img alt="Local image" src="image.svg"><span id="page-ready">Ready · Local page, image and system fonts</span></footer>
+</html>

@@ -1,0 +1,12 @@
+.git
+bin
+artifacts
+bundles
+webcappi
+webcappi.exe
+**/*.test
+**/*.test.exe
+coverage.out
+coverage.html
+config.json
+capture.png
