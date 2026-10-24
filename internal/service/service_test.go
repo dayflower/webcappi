@@ -14,7 +14,7 @@ import (
 )
 
 func request(url string) capture.Request {
-	return capture.Request{URL: url, Width: 800, Height: 480, ProfileName: "reader", Profile: capture.Profile{Revision: "r1"}}
+	return capture.Request{URL: url, Width: 800, Height: 480, ProfileName: "default", Profile: capture.Profile{ProfileDirectory: "Default"}}
 }
 
 func TestCacheAndCoalescing(t *testing.T) {
@@ -88,7 +88,16 @@ func TestCacheAndCoalescing(t *testing.T) {
 		t.Fatal("ETag must depend on content")
 	}
 	changed := request("http://fixture")
-	changed.Profile.Revision = "r2"
+	changed.Profile = capture.Profile{
+		UserDataDir: "/other/user-data", ProfileDirectory: "Other",
+		Extensions: []string{"/other/extension"}, ReadySelectors: []string{"#extension-ready"},
+	}
+	sameProfile, err := s.Get(t.Context(), changed)
+	if err != nil || sameProfile != next || calls.Load() != 2 {
+		t.Fatalf("profile settings bypassed the named profile cache: %v %d", err, calls.Load())
+	}
+	changed = request("http://fixture")
+	changed.ProfileName = "other"
 	_, _ = s.Get(t.Context(), changed)
 	changed = request("http://fixture")
 	changed.ReadySelector = "#ready"
@@ -97,10 +106,11 @@ func TestCacheAndCoalescing(t *testing.T) {
 	changed.Width = 801
 	_, _ = s.Get(t.Context(), changed)
 	changed = request("http://fixture")
-	changed.Profile.ReadySelectors = []string{"#extension-a-ready", "#extension-b-ready"}
+	changed.Height = 481
 	_, _ = s.Get(t.Context(), changed)
-	if calls.Load() != 6 {
-		t.Fatal("render inputs missing from key")
+	_, _ = s.Get(t.Context(), request("http://other-fixture"))
+	if calls.Load() != 7 {
+		t.Fatal("request parameters missing from key")
 	}
 }
 

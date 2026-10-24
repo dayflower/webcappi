@@ -20,12 +20,10 @@
   "max_post_bytes": 1048576,
   "max_png_bytes": 41943040,
   "profiles": {
-    "reader": {
-      "revision": "reader-20261023-1",
-      "browser_version": "156.0.8078.47",
-      "user_data_dir": "/bundles/reader/user-data",
+    "default": {
+      "user_data_dir": "/bundles/default/user-data",
       "profile_directory": "Default",
-      "extensions": ["/bundles/reader/extensions/verification"],
+      "extensions": ["/bundles/default/extensions/verification"],
       "ready_selectors": ["#webcappi-extension-ready"]
     }
   }

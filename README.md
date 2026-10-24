@@ -154,7 +154,7 @@ Passing `Default/` itself as `user_data_dir` is incorrect. See Chromium's
 Keep extension code and browser data separate:
 
 ```text
-bundles/reader/
+bundles/default/
   bundle.json
   extensions/verification/manifest.json
   extensions/verification/...
@@ -165,31 +165,31 @@ bundles/reader/
 
 `bundle.json` is the profile descriptor shown in `config.example.json`. The
 server checks that it exactly matches the configured descriptor, including the
-revision, browser version, individual profile, extension paths and readiness
-signal. Do not edit a mounted bundle in place. Treat it as immutable.
+User Data Directory, individual profile, extension paths and readiness signals.
+Do not edit a mounted bundle in place. Treat it as immutable.
 
 On a **Linux X11 desktop**, launch the exact production image and browser:
 
 ```sh
 make image
-bash scripts/prepare-profile.sh bundles/reader
+bash scripts/prepare-profile.sh bundles/default
 ```
 
 For another architecture, select its built image explicitly, for example
-`PLATFORM=linux/arm64 WEBCAPPI_IMAGE=webcappi:dev-arm64 bash scripts/prepare-profile.sh bundles/arm64/reader`.
+`PLATFORM=linux/arm64 WEBCAPPI_IMAGE=webcappi:dev-arm64 bash scripts/prepare-profile.sh bundles/arm64/default`.
 Prepare and qualify profiles with the production architecture as well as the
 same browser version, OS image and extension paths. Do not assume an amd64
 template is qualified for arm64. Keep architecture-specific bundles in separate
-staging directories and give each a distinct revision. A multi-platform bundle
-image must package the matching prepared data for each architecture; rebuilding
-one template twice does not establish profile portability.
+staging directories. A multi-platform bundle image must package the matching
+prepared data for each architecture; rebuilding one template twice does not
+establish profile portability.
 
 The helper imports a scoped X11 cookie with mode 0600 and runs Chromium as UID/GID
 10001. It does not change `xhost` access control. It opens `chrome://extensions`
 without headless mode, using an isolated User Data Directory. In that browser:
 
 1. Enable Developer mode and choose **Load unpacked**.
-2. Select `/bundles/reader/extensions/verification` for the sample extension.
+2. Select `/bundles/default/extensions/verification` for the sample extension.
 3. For real extensions, configure their permissions/settings, finish onboarding
    and logins if needed, and verify operation on representative target pages.
    To use an extension on posted HTML, enable **Allow access to file URLs** in
@@ -243,8 +243,7 @@ cp config.example.json config.json
 # Create the configured token file, or omit auth to disable HTTP authentication.
 ./bin/webcappi check -config config.json
 ./bin/webcappi serve -config config.json
-./bin/webcappi capture -config config.json -profile reader \
-  -url http://page-service:8000/ -width 800 -height 480 -out capture.png
+./bin/webcappi capture -config config.json -url http://page-service:8000/
 ```
 
 `check` validates configuration, bundle descriptors, browser version, scratch
@@ -255,9 +254,7 @@ only for that CLI process. `version` prints the supported browser version.
 ```sh
 curl --get http://localhost:8080/capture \
   --header 'Authorization: Bearer YOUR_TOKEN' \
-  --data-urlencode profile=reader \
   --data-urlencode url=http://page-service:8000/ \
-  --data-urlencode width=800 --data-urlencode height=480 \
   --output capture.png
 ```
 
@@ -271,7 +268,7 @@ curl --get http://localhost:8080/capture \
 To render a local HTML file, send its contents with `Content-Type: text/html`:
 
 ```sh
-curl 'http://localhost:8080/capture?profile=reader&width=800&height=480' \
+curl 'http://localhost:8080/capture' \
   --header 'Authorization: Bearer YOUR_TOKEN' \
   --header 'Content-Type: text/html; charset=utf-8' \
   --data-binary @page.html \
@@ -362,7 +359,11 @@ the supplied manifest.
 
 ### Capture parameters and responses
 
-`profile` is always required; GET also requires an absolute HTTP(S) `url`.
+GET requires an absolute HTTP(S) `url`; all other query parameters are optional.
+HTML POST requires no query parameters. Omitting `profile` selects the configured
+`default` profile, as does omitting CLI `-profile`. Specify another configured
+name to select a different profile. An explicitly empty or unknown profile name
+is rejected.
 `width` defaults to 800 and `height` to 480. Optional `ready_selector` waits for
 an element in the page;
 profile `ready_selectors` lists readiness signals, for example one per extension:
@@ -427,10 +428,15 @@ disables internal caching. Configuration changes require a process restart.
 | `max_profile_bytes` | 536870912 | Maximum template bytes copied per capture |
 | `max_post_bytes` | 1048576 | Maximum HTML POST body bytes (1–134217728) |
 | `max_png_bytes` | 41943040 | Maximum returned/cached PNG size |
-| `profiles` | required | Named immutable descriptors (1–128 profiles) |
+| `profiles` | required | Named immutable descriptors (1–128 profiles, including `default`) |
 
-Profile fields are `revision`, `browser_version`, `user_data_dir`,
-`profile_directory`, `extensions`, and optional `ready_selectors`.
+`profiles.default` must be configured and valid; startup fails if it is missing.
+The name `default` selects a capture profile; `profile_directory` identifies the
+individual Chromium profile inside its User Data Directory, usually `Default`.
+
+Profile fields are `user_data_dir`, `profile_directory`, `extensions`, and optional
+`ready_selectors`. The application pins and checks the browser version; profiles
+do not declare it.
 `user_data_dir` must have a sibling `bundle.json`. Scratch and templates cannot
 overlap; copies reject special files and symlinks except obsolete top-level
 Chromium lock/endpoint files, which are excluded. Files in copies are independent
@@ -448,13 +454,13 @@ the example's emptyDir is reclaimed with the pod.
 
 ## Cache semantics
 
-The GET cache key contains URL, viewport, both readiness
-selectors, the complete profile descriptor (including revision and browser version), scale factor and renderer
-schema. Change `revision` whenever any extension, setting, template data or
-rendering contract changes; changing bundle files without changing revision is
-unsupported. Cache entries use an LRU bounded by PNG bytes and entry count;
-expired entries are removed lazily on requests. Errors are not cached. Oversized
-cache entries can still be returned, up to `max_png_bytes`.
+The GET cache key contains URL, viewport, the request's `ready_selector`, profile
+name, scale factor and renderer schema. Profile settings and bundle contents are
+not part of the key. Changes under the same profile name can reuse existing
+entries until TTL expiry or a process restart discards the internal cache.
+Cache entries use an LRU bounded by PNG bytes and entry count; expired entries
+are removed lazily on requests. Errors are not cached. Oversized cache entries
+can still be returned, up to `max_png_bytes`.
 
 GET responses use `Cache-Control: private, max-age=<TTL>, must-revalidate` and an
 `Age` rounded conservatively from the **original generation time**. A hit or 304
@@ -593,7 +599,7 @@ kubectl create secret generic webcappi-auth \
 Build the profile artifact independently of the API image:
 
 ```sh
-docker build -f deploy/bundle.Dockerfile -t webcappi-profiles:reader-20261023-1 bundles
+docker build -f deploy/bundle.Dockerfile -t webcappi-profiles:default-20261023-1 bundles
 # Set registry/digest references in deploy/kubernetes.yaml before applying.
 kubectl apply -f deploy/kubernetes.yaml
 ```
@@ -602,9 +608,10 @@ The initContainer copies the artifact to a pod-local emptyDir; the API mounts
 that volume read-only. No PVC is required because the template is reproducible
 from its artifact. Limit bundle size to the initContainer and volume resources;
 adjust defaults for larger profiles. API and bundle images can be updated
-independently, but the configured/browser/bundle versions must agree. For more
-profiles, add artifact directories, initContainer copies and descriptors. The
-example uses Recreate to avoid overlapping single-replica caches on updates.
+independently. Prepare and qualify each bundle with the browser shipped in the
+target API image. For more profiles, add artifact directories, initContainer
+copies and descriptors. The example uses Recreate to avoid overlapping
+single-replica caches on updates.
 
 This is an internal capture service with intentional access to private/cluster
 addresses. Optional shared Bearer authentication controls API access; it does
@@ -619,12 +626,12 @@ limits; PNG/cache limits do not bound all memory consumed by Chromium.
 
 1. Stage a new bundle; retain extension public keys and absolute runtime paths.
 2. For a browser update, update the pinned version in the Dockerfile, Go constant,
-   descriptors, helper/test scripts and deployment. Build the new browser image.
+   documentation and test scripts. Build the new browser image.
 3. Open a copy of the previous template with that exact image's headed browser;
    apply extension changes/settings/migrations, finish any new onboarding and
    close normally. Keep the previous bundle available for rollback.
-4. Assign a new revision and update `bundle.json` and the configured descriptor
-   together. Re-run fixture tests and qualification tests for real extensions.
+4. Keep `bundle.json` and the configured descriptor in sync. Re-run fixture
+   tests and qualification tests for real extensions.
 5. Build/promote API and profile images with immutable tags/digests. Roll out a
    matching pair. Never migrate the live template or reuse a capture's mutated
    state as the new template.

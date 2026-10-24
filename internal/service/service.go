@@ -60,12 +60,22 @@ func New(parent context.Context, cfg config.Config, render RenderFunc) *Service 
 }
 
 func Key(req capture.Request) string {
-	// Include every rendering input, the entire profile descriptor and a renderer
-	// schema version. Bundle revision must change when bundle contents change.
+	// URL captures identify a profile by name for caching and coalescing.
 	b, _ := json.Marshal(struct {
-		Schema  string
-		Request capture.Request
-	}{"viewport-png-v1-dsf1", req})
+		Schema        string
+		URL           string
+		Width         int
+		Height        int
+		ProfileName   string
+		ReadySelector string
+	}{
+		Schema:        "viewport-png-v1-dsf1",
+		URL:           req.URL,
+		Width:         req.Width,
+		Height:        req.Height,
+		ProfileName:   req.ProfileName,
+		ReadySelector: req.ReadySelector,
+	})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }

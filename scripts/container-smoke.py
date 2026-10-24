@@ -49,8 +49,7 @@ def main():
         for path in [template, *template.rglob("*")]:
             path.chmod(0o755 if path.is_dir() else 0o644)
         shutil.copytree(ROOT / "testdata/page", data / "page")
-        profile = dict(revision="smoke-1", browser_version="156.0.8078.47",
-                       user_data_dir="/template/user-data", profile_directory="Default",
+        profile = dict(user_data_dir="/template/user-data", profile_directory="Default",
                        extensions=["/src/testdata/extension"],
                        ready_selectors=["#webcappi-extension-ready", "html"])
         (data / "bundle.json").write_text(json.dumps(profile))
@@ -58,7 +57,7 @@ def main():
         # examples preserve the sandbox unless explicitly configured otherwise.
         cfg = dict(no_sandbox=True, work_dir="/work/captures", concurrency=1,
                    queue_size=1, max_requests=8, capture_timeout_seconds=10,
-                   cache_ttl_seconds=2, max_post_bytes=1024, profiles={"reader": profile})
+                   cache_ttl_seconds=2, max_post_bytes=1024, profiles={"default": profile})
         token = "synthetic-smoke-token"
         (data / "token").write_text(token + "\n")
         (data / "token").chmod(0o644)
@@ -109,7 +108,7 @@ def main():
                 raise AssertionError("readiness failed: " + logs.stdout + logs.stderr)
 
             def capture(**kwargs):
-                query = dict(profile="reader", url="http://fixture:8000/", width=800, height=480)
+                query = dict(url="http://fixture:8000/")
                 query.update(kwargs)
                 return "/capture?" + urllib.parse.urlencode(query)
 
@@ -132,6 +131,7 @@ def main():
             assert headers["Content-Type"] == "image/png"
             assert struct.unpack(">II", png[16:24]) == (800, 480)
             assert get(capture(), headers["ETag"])[0] == 304
+            assert get(capture(profile="default"), headers["ETag"])[0] == 304
             assert get(capture(), headers["ETag"], authorization=None)[0] == 401
             assert get(capture(), headers["ETag"], authorization="Bearer wrong-token")[0] == 401
             # Docker sends slog's stderr separately from stdout.
@@ -147,7 +147,7 @@ def main():
             assert get(capture(url="http://fixture:8000/missing"))[0] == 502
             assert get(capture(width=99999))[0] == 400
 
-            html_path = "/capture?" + urllib.parse.urlencode(dict(profile="reader", width=320, height=200,
+            html_path = "/capture?" + urllib.parse.urlencode(dict(width=320, height=200,
                                                                   ready_selector="#ready"))
             html = ("<!doctype html><style>body{background:#123456}</style>"
                     "<p id=ready>日本語 HTML</p>").encode("utf-8")
@@ -180,12 +180,17 @@ def main():
                 assert "ETag" not in mode_headers and "Age" not in mode_headers
                 assert struct.unpack(">II", mode_png[16:24]) == (320, 200)
                 (artifacts / f"api-html-{mode}.png").write_bytes(mode_png)
+            minimal_status, minimal_headers, minimal_png = get("/capture", data=html, content_type="text/html")
+            assert minimal_status == 200, (minimal_status, minimal_png[:1024])
+            assert minimal_headers["Content-Type"] == "image/png"
+            assert minimal_headers["Cache-Control"] == "no-store"
+            assert struct.unpack(">II", minimal_png[16:24]) == (800, 480)
             assert post_html(mode="data")[0] == 400
             assert post_html(body=b"x" * (cfg["max_post_bytes"] + 1))[0] == 413
             assert get(html_path, data=b"{}", content_type="application/json")[0] == 415
             after_html_logs = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
             after_html_renders = (after_html_logs.stdout + after_html_logs.stderr).count("capture started")
-            assert after_html_renders == before_html_renders + 6, "POST reused a previous render"
+            assert after_html_renders == before_html_renders + 7, "POST reused a previous render"
             (artifacts / "api-html.png").write_bytes(html_png)
             assert docker("exec", PREFIX + "-api", "find", "/work/captures", "-mindepth", "1") == ""
             after = hashlib.sha256()

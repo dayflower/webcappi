@@ -14,8 +14,6 @@ import (
 )
 
 type Profile struct {
-	Revision         string   `json:"revision"`
-	BrowserVersion   string   `json:"browser_version"`
 	UserDataDir      string   `json:"user_data_dir"`
 	ProfileDirectory string   `json:"profile_directory"`
 	Extensions       []string `json:"extensions"`

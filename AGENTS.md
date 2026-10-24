@@ -13,8 +13,8 @@ See `README.md` for architecture, configuration and operating procedures.
   Capture an explicitly created page, not an extension's welcome tab.
 - Bound concurrency, queues and caches. Preserve deadlines and browser/file
   cleanup on failure or cancellation. Wait for selectors and fonts/images.
-- Include all rendering inputs and profile revisions in cache keys. Preserve
-  TTL/Age, content-based ETags and regeneration before 304 after expiry.
+- Include URL, viewport, request readiness selector and profile name in cache keys.
+  Preserve TTL/Age, content-based ETags and regeneration before 304 after expiry.
 - Private URLs and Kubernetes Service DNS names are intentional targets.
 - Verify font selection through Chromium/CDP, not only `fc-match`.
 

@@ -35,7 +35,7 @@ func run(args []string) error {
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	path := fs.String("config", "config.json", "server configuration")
-	profile := fs.String("profile", "reader", "capture profile name")
+	profile := fs.String("profile", config.DefaultProfileName, "capture profile name")
 	url := fs.String("url", "", "page URL")
 	width := fs.Int("width", 800, "viewport width")
 	height := fs.Int("height", 480, "viewport height")

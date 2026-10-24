@@ -221,10 +221,13 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	if req.Width > a.cfg.MaxWidth || req.Height > a.cfg.MaxHeight || int64(req.Width)*int64(req.Height) > a.cfg.MaxPixels {
 		return req, errors.New("viewport exceeds configured limits")
 	}
-	req.ProfileName = q.Get("profile")
+	req.ProfileName = config.DefaultProfileName
+	if values, ok := q["profile"]; ok {
+		req.ProfileName = values[0]
+	}
 	p, ok := a.cfg.Profiles[req.ProfileName]
 	if !ok {
-		return req, errors.New("unknown or missing profile")
+		return req, errors.New("unknown profile")
 	}
 	req.Profile = p
 	req.ReadySelector = q.Get("ready_selector")

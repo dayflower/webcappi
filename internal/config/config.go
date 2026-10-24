@@ -18,6 +18,8 @@ import (
 	"github.com/dayflower/webcappi/internal/capture"
 )
 
+const DefaultProfileName = "default"
+
 type Config struct {
 	Listen                string                     `json:"listen"`
 	Auth                  *Auth                      `json:"auth,omitempty"`
@@ -95,12 +97,15 @@ func (c Config) Validate() error {
 	if len(c.Profiles) == 0 || len(c.Profiles) > 128 {
 		return errors.New("configure 1..128 profiles")
 	}
+	if _, ok := c.Profiles[DefaultProfileName]; !ok {
+		return errors.New("profiles.default is required")
+	}
 	for name, p := range c.Profiles {
 		if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(name) {
 			return fmt.Errorf("invalid profile name %q", name)
 		}
-		if p.Revision == "" || len(p.Revision) > 128 || p.BrowserVersion != capture.BrowserVersion || !capture.ValidProfileDirectory(p.ProfileDirectory) {
-			return fmt.Errorf("profile %s: revision, matching browser_version and profile_directory required", name)
+		if !capture.ValidProfileDirectory(p.ProfileDirectory) {
+			return fmt.Errorf("profile %s: valid profile_directory required", name)
 		}
 		if !filepath.IsAbs(p.UserDataDir) || within(p.UserDataDir, c.WorkDir) || within(c.WorkDir, p.UserDataDir) {
 			return fmt.Errorf("profile %s: absolute user_data_dir must be separate from work_dir", name)

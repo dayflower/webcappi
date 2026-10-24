@@ -13,12 +13,10 @@ data:
       "no_sandbox": false,
       "work_dir": "/work/captures",
       "profiles": {
-        "reader": {
-          "revision": "reader-20261023-1",
-          "browser_version": "156.0.8078.47",
-          "user_data_dir": "/bundles/reader/user-data",
+        "default": {
+          "user_data_dir": "/bundles/default/user-data",
           "profile_directory": "Default",
-          "extensions": ["/bundles/reader/extensions/verification"],
+          "extensions": ["/bundles/default/extensions/verification"],
           "ready_selectors": ["#webcappi-extension-ready"]
         }
       }
@@ -46,8 +44,8 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       initContainers:
         - name: install-bundle
-          image: webcappi-profiles:reader-20261023-1
-          command: ["sh", "-c", "cp -R /bundle/reader /out/reader"]
+          image: webcappi-profiles:default-20261023-1
+          command: ["sh", "-c", "cp -R /bundle/default /out/default"]
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
