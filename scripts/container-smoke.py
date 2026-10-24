@@ -59,6 +59,10 @@ def main():
         cfg = dict(no_sandbox=True, work_dir="/work/captures", concurrency=1,
                    queue_size=1, max_requests=8, capture_timeout_seconds=10,
                    cache_ttl_seconds=2, profiles={"reader": profile})
+        token = "synthetic-smoke-token"
+        (data / "token").write_text(token + "\n")
+        (data / "token").chmod(0o644)
+        cfg["auth"] = {"bearer_token_file": "/run/secrets/webcappi/token"}
         (data / "config.json").write_text(json.dumps(cfg))
         created = []
         try:
@@ -73,13 +77,17 @@ def main():
                    "-v", f"{template}:/template/user-data:ro",
                    "-v", f"{ROOT / 'testdata/extension'}:/src/testdata/extension:ro",
                    "-v", f"{data / 'bundle.json'}:/template/bundle.json:ro",
+                   "-v", f"{data / 'token'}:/run/secrets/webcappi/token:ro",
                    "-v", f"{data / 'config.json'}:/etc/webcappi/config.json:ro", image)
             created.append(PREFIX + "-api")
             port = docker("port", PREFIX + "-api", "8080/tcp").rsplit(":", 1)[1]
             base = f"http://127.0.0.1:{port}"
 
-            def get(path, etag=None):
-                req = urllib.request.Request(base + path, headers={"If-None-Match": etag} if etag else {})
+            def get(path, etag=None, authorization=f"Bearer {token}"):
+                headers = {"If-None-Match": etag} if etag else {}
+                if authorization is not None:
+                    headers["Authorization"] = authorization
+                req = urllib.request.Request(base + path, headers=headers)
                 try:
                     response = urllib.request.urlopen(req, timeout=15)
                 except urllib.error.HTTPError as error:
@@ -89,7 +97,7 @@ def main():
 
             for _ in range(100):
                 try:
-                    if get("/readyz")[0] == 200:
+                    if get("/readyz", authorization=None)[0] == 200:
                         break
                 except (OSError, http.client.HTTPException):
                     pass
@@ -103,6 +111,14 @@ def main():
                 query.update(kwargs)
                 return "/capture?" + urllib.parse.urlencode(query)
 
+            assert get("/healthz", authorization=None)[0] == 200
+            for authorization in (None, "Bearer wrong-token", "Basic " + token):
+                status, headers, body = get(capture(), authorization=authorization)
+                assert status == 401 and headers["WWW-Authenticate"] == "Bearer"
+                assert headers["Cache-Control"] == "no-store"
+                assert json.loads(body) == {"error": "unauthorized"}
+            assert get(capture(access_token=token), authorization=None)[0] == 401
+
             original = hashlib.sha256()
             for path in sorted(template.rglob("*")):
                 if path.is_file():
@@ -114,6 +130,8 @@ def main():
             assert headers["Content-Type"] == "image/png"
             assert struct.unpack(">II", png[16:24]) == (800, 480)
             assert get(capture(), headers["ETag"])[0] == 304
+            assert get(capture(), headers["ETag"], authorization=None)[0] == 401
+            assert get(capture(), headers["ETag"], authorization="Bearer wrong-token")[0] == 401
             # Docker sends slog's stderr separately from stdout.
             logproc = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
             assert (logproc.stdout + logproc.stderr).count("capture started") == 1
@@ -135,7 +153,7 @@ def main():
             docker("stop", "-t", "10", PREFIX + "-api")
             state = json.loads(docker("inspect", PREFIX + "-api"))[0]["State"]
             assert state["ExitCode"] == 0, state
-            print("PASS: real container REST, private DNS, PNG, extension, coalescing/cache, fresh ETag, errors, cleanup, shutdown")
+            print("PASS: real container REST, Bearer authentication, private DNS, PNG, extension, coalescing/cache, fresh ETag, errors, cleanup, shutdown")
         finally:
             for container in reversed(created):
                 docker("rm", "-f", container, check=False)

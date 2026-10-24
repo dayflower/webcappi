@@ -1,5 +1,8 @@
 {
   "listen": ":8080",
+  "auth": {
+    "bearer_token_file": "/run/secrets/webcappi/token"
+  },
   "browser_path": "/opt/chrome/chrome",
   "no_sandbox": false,
   "work_dir": "/work/captures",

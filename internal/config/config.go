@@ -20,6 +20,7 @@ import (
 
 type Config struct {
 	Listen                string                     `json:"listen"`
+	Auth                  *Auth                      `json:"auth,omitempty"`
 	BrowserPath           string                     `json:"browser_path"`
 	NoSandbox             bool                       `json:"no_sandbox"`
 	WorkDir               string                     `json:"work_dir"`
@@ -36,6 +37,10 @@ type Config struct {
 	MaxProfileBytes       int64                      `json:"max_profile_bytes"`
 	MaxPNGBytes           int64                      `json:"max_png_bytes"`
 	Profiles              map[string]capture.Profile `json:"profiles"`
+}
+
+type Auth struct {
+	BearerTokenFile string `json:"bearer_token_file"`
 }
 
 func Defaults() Config {
@@ -67,6 +72,9 @@ func (c Config) TTL() time.Duration     { return time.Duration(c.CacheTTLSeconds
 func (c Config) Validate() error {
 	if c.Listen == "" || !filepath.IsAbs(c.BrowserPath) || !filepath.IsAbs(c.WorkDir) {
 		return errors.New("listen and absolute browser_path/work_dir are required")
+	}
+	if c.Auth != nil && !filepath.IsAbs(c.Auth.BearerTokenFile) {
+		return errors.New("auth.bearer_token_file must be an absolute path")
 	}
 	if c.Concurrency < 1 || c.Concurrency > 32 || c.QueueSize < 0 || c.QueueSize > 1024 || c.MaxRequests < 1 || c.MaxRequests > 4096 {
 		return errors.New("invalid concurrency, queue_size or max_requests")

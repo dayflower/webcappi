@@ -71,3 +71,49 @@ func TestConfigDecodeAndDefaults(t *testing.T) {
 		t.Fatal("unexpected defaults")
 	}
 }
+
+func TestAuthConfig(t *testing.T) {
+	input, err := os.ReadFile("../../config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base map[string]any
+	if err := json.Unmarshal(input, &base); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, tc := range []struct {
+		name string
+		auth any
+		ok   bool
+	}{
+		{"omitted", nil, true},
+		{"enabled", map[string]any{"bearer_token_file": "/run/secrets/webcappi/token"}, true},
+		{"empty object", map[string]any{}, false},
+		{"empty path", map[string]any{"bearer_token_file": ""}, false},
+		{"relative path", map[string]any{"bearer_token_file": "token"}, false},
+		{"unknown field", map[string]any{"token_file": "/token"}, false},
+		{"wrong type", "token", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			delete(base, "auth")
+			if tc.auth != nil {
+				base["auth"] = tc.auth
+			}
+			b, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, b, 0600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Load(path)
+			if (err == nil) != tc.ok {
+				t.Fatalf("unexpected validation result: %v", err)
+			}
+			if err == nil && (c.Auth != nil) != (tc.auth != nil) {
+				t.Fatal("auth configuration not preserved")
+			}
+		})
+	}
+}

@@ -51,6 +51,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	auth, err := httpapi.NewBearerAuth(c.Auth)
+	if err != nil {
+		return err
+	}
 	b := capture.Browser{Path: c.BrowserPath, NoSandbox: c.NoSandbox}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -105,7 +109,7 @@ func run(args []string) error {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 	// The job timeout covers queueing, copying, browser startup and rendering.
-	server := &http.Server{Addr: c.Listen, Handler: api, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: c.Timeout() + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
+	server := &http.Server{Addr: c.Listen, Handler: auth.Handler(api), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: c.Timeout() + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan error, 1)
 	go func() {
 		slog.Info("listening", "address", c.Listen, "browser_version", capture.BrowserVersion)

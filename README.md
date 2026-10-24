@@ -236,6 +236,7 @@ preferred way to keep these dependencies consistent.
 make build
 cp config.example.json config.json
 # Edit config.json and the corresponding bundle.json for your prepared bundle.
+# Create the configured token file, or omit auth to disable HTTP authentication.
 ./bin/webcappi check -config config.json
 ./bin/webcappi serve -config config.json
 ./bin/webcappi capture -config config.json -profile reader \
@@ -249,6 +250,7 @@ only for that CLI process. `version` prints the supported browser version.
 
 ```sh
 curl --get http://localhost:8080/capture \
+  --header 'Authorization: Bearer YOUR_TOKEN' \
   --data-urlencode profile=reader \
   --data-urlencode url=http://page-service:8000/ \
   --data-urlencode width=800 --data-urlencode height=480 \
@@ -260,6 +262,55 @@ curl --get http://localhost:8080/capture \
 | `/capture` | Direct `image/png` response; no JSON image wrapper |
 | `/healthz` | Process liveness; does not start Chromium |
 | `/readyz` | Checks immutable bundle readability and writable scratch; 503 during shutdown |
+
+### API authentication
+
+Configure a shared Bearer token file to require authentication for HTTP requests
+other than `/healthz` and `/readyz`:
+
+```json
+{
+  "auth": {
+    "bearer_token_file": "/run/secrets/webcappi/token"
+  }
+}
+```
+
+Omitting `auth` disables authentication for compatibility with existing
+configurations. When present, `auth.bearer_token_file` must be an absolute path.
+The file must contain one token of 1–4096 ASCII bytes using the Bearer token
+alphabet (letters, digits, `-._~+/`, and optional trailing `=` padding).
+A single trailing LF or CRLF is accepted; spaces, empty files and multiple
+lines are rejected. For example, generate a random token in a protected local
+directory:
+
+```sh
+umask 077
+openssl rand -hex 32 > /secure/path/webcappi-token
+```
+
+The token is loaded once, before browser startup, by `serve`, `check` and
+`capture`. Missing, unreadable or invalid files fail startup. Only a SHA-256
+digest is retained by the authenticator, and tokens are never included in its
+errors. Restart the process after rotating the token; mounted Secret updates
+are not automatically reloaded. The local `capture` CLI does not require an
+Authorization header, but still validates the configured token file.
+
+Send `Authorization: Bearer <token>` on each API request. Missing or invalid
+credentials return JSON with HTTP 401, `WWW-Authenticate: Bearer` and
+`Cache-Control: no-store`, before input validation, admission or cache access.
+Tokens in query parameters or cookies are not accepted. Authentication applies
+to cached PNGs and conditional requests as well as new captures. The API token
+is not forwarded to the captured site. All holders of the shared token can use
+all configured profiles and share the internal capture cache.
+
+The example configuration enables authentication. Use TLS at your ingress or
+reverse proxy to protect Bearer tokens in transit; the application itself serves
+HTTP. Keep the token file readable only by the intended runtime identity. For
+Kubernetes, mount a Secret separately from the configuration ConfigMap, as in
+the supplied manifest.
+
+### Capture parameters and responses
 
 `profile` and absolute HTTP(S) `url` are required. `width` defaults to 800 and
 `height` to 480. Optional `ready_selector` waits for an element in the page;
@@ -293,6 +344,7 @@ disables internal caching. Configuration changes require a process restart.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `listen` | `:8080` | HTTP bind address |
+| `auth.bearer_token_file` | unset | Absolute shared Bearer token file path; omit `auth` to disable API authentication |
 | `browser_path` | `/opt/chrome/chrome` | Absolute, preinstalled browser path |
 | `no_sandbox` | `false` | Explicit browser sandbox opt-out |
 | `work_dir` | `/work` | Writable scratch, separate from templates/extensions |
@@ -417,6 +469,7 @@ docker run --rm --name webcappi -p 127.0.0.1:8080:8080 \
   --read-only --shm-size=512m \
   --tmpfs /work:uid=10001,gid=10001,mode=700 --tmpfs /tmp \
   -v "$PWD/config.json:/etc/webcappi/config.json:ro" \
+  -v /secure/path/webcappi-token:/run/secrets/webcappi/token:ro \
   -v "$PWD/bundles:/bundles:ro" \
   webcappi:dev
 ```
@@ -429,8 +482,9 @@ avoids Chromium's Unix socket path-length limit. Tini reaps orphaned descendants
 runtime download step and no Go compiler. Multilingual fonts and Chromium's shared
 libraries are installed at build time. Base OS package updates are not a
 byte-for-byte reproducibility guarantee; promote the built image by digest.
-For host bind mounts, explicitly grant UID 10001 read/traverse access using
-ownership or a narrowly scoped ACL; `docker cp` normally exports files owned by
+For host bind mounts, explicitly grant UID 10001 read/traverse access to the
+token file and bundles using ownership or a narrowly scoped ACL; `docker cp`
+normally exports files owned by
 the invoking host user, with private file modes. Do not make credential-bearing
 profiles world-readable. The bundle Dockerfile uses `COPY --chown=10001:10001`
 so the initContainer can read private bundle files and copy them as that user.
@@ -451,6 +505,16 @@ memory. Browser startup checks occur before listening. Readiness does not launch
 a browser on each probe or mark the server unready simply because its one slot
 is busy. A previously valid bundle becoming unreadable does make it unready.
 
+Create the authentication Secret from your protected token file. The example
+mounts it read-only with mode 0440; the pod's group 10001 can read it. Provision
+this Secret in the same namespace as the Deployment and keep the client copy
+secure:
+
+```sh
+kubectl create secret generic webcappi-auth \
+  --from-file=token=/secure/path/webcappi-token
+```
+
 Build the profile artifact independently of the API image:
 
 ```sh
@@ -468,9 +532,10 @@ profiles, add artifact directories, initContainer copies and descriptors. The
 example uses Recreate to avoid overlapping single-replica caches on updates.
 
 This is an internal capture service with intentional access to private/cluster
-addresses. It has no built-in authentication or SSRF boundary. Keep it behind
-authorized callers and restrict ingress/egress using your network policy and
-authentication gateway. A captured page's requests, redirects and extensions
+addresses. Optional shared Bearer authentication controls API access; it does
+not provide per-caller authorization or an SSRF boundary. Restrict ingress/egress
+using your network policy and use an authentication gateway when more granular
+access control is needed. A captured page's requests, redirects and extensions
 inherit the browser pod's network reachability and prepared profile credentials.
 Disk, memory, CPU and target-page behavior still require container resource
 limits; PNG/cache limits do not bound all memory consumed by Chromium.
@@ -530,6 +595,14 @@ The amd64 browser tests and REST smoke test passed with explicit platform,
 image and artifact-directory settings. Go race tests, vet, script syntax checks
 and Dockerfile build checks passed. No images were published to a registry.
 
+The Bearer authentication update passed Go 1.26.10 race tests and vet, the amd64
+image build, real-browser tests and the authenticated REST container smoke test.
+Both amd64 and arm64 CLI binaries were built and their ELF architectures checked.
+The Kubernetes manifest passed client-side dry-run validation. The current
+builder could not execute ARM64 build steps (`exec format error`), so this
+update's multi-platform image build did not complete and ARM64 runtime behavior
+was not verified. No cluster resources were created.
+
 Implemented tests cover exact PNG dimensions, Japanese rendering, a pixel-level
 extension marker, real headed unpacked installation, two independent headless
 clones retaining extension storage without another initial welcome, unrelated
@@ -546,7 +619,8 @@ with multiple waiters, deadlines, shutdown, HTTP errors and health/readiness.
 `scripts/container-smoke.py` runs the actual REST image with a read-only root,
 read-only template/extension mounts, writable tmpfs and a local page in another
 container addressed through private Docker DNS. It checks PNG output, concurrent
-coalescing and cache hits without another capture, TTL expiry after page changes,
+coalescing and cache hits without another capture, Bearer authentication including
+cached/conditional responses and unauthenticated probes, TTL expiry after page changes,
 conditional responses, input/timeout/load errors, scratch cleanup, template
 integrity and normal SIGTERM exit. It does not contact an external page.
 
