@@ -51,13 +51,13 @@ func NewBearerAuth(c *config.Auth) (*BearerAuth, error) {
 	return a, nil
 }
 
-// Handler exempts probes and authenticates every other request before routing.
+// Handler exempts the guide and probes and authenticates other requests before routing.
 func (a *BearerAuth) Handler(next http.Handler) http.Handler {
 	if !a.enabled {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		if r.URL.Path == "/" || r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			next.ServeHTTP(w, r)
 			return
 		}

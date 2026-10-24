@@ -27,17 +27,18 @@ type Profile struct {
 }
 
 type Request struct {
-	URL           string
-	HTML          string
-	HTMLMode      string
-	Width         int
-	Height        int
-	OutputWidth   int
-	OutputHeight  int
-	ProfileName   string
-	Profile       Profile
-	ReadySelector string
-	DelayMS       int
+	URL             string
+	HTML            string
+	HTMLMode        string
+	HTMLContentType string
+	Width           int
+	Height          int
+	OutputWidth     int
+	OutputHeight    int
+	ProfileName     string
+	Profile         Profile
+	ReadySelector   string
+	DelayMS         int
 }
 
 // OutputSize defaults each omitted output dimension to its viewport dimension.
@@ -147,7 +148,7 @@ func (r Renderer) Capture(ctx context.Context, req Request) (png []byte, err err
 	url := req.URL
 	if req.HTML != "" {
 		var closeHTML func() error
-		url, closeHTML, err = prepareHTML(ctx, work, req.HTML, req.HTMLMode)
+		url, closeHTML, err = prepareHTML(ctx, work, req.HTML, req.HTMLMode, req.HTMLContentType)
 		if err != nil {
 			return nil, fmt.Errorf("prepare HTML: %w", err)
 		}

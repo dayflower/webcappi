@@ -52,6 +52,8 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/":
+		a.index(w)
 	case "/healthz":
 		w.WriteHeader(200)
 		fmt.Fprintln(w, "ok")
@@ -96,9 +98,14 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
-		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if err != nil || mediaType != "text/html" || (params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8")) {
-			fail(w, 415, "Content-Type must be text/html with UTF-8 encoding")
+		contentType := r.Header.Get("Content-Type")
+		mediaType, params, err := mime.ParseMediaType(contentType)
+		if err != nil || mediaType != "text/html" {
+			fail(w, 415, "Content-Type must be text/html")
+			return
+		}
+		if req.HTMLMode == capture.HTMLModeFile && params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8") {
+			fail(w, 415, "file mode requires UTF-8 encoding")
 			return
 		}
 		if encoding := r.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
@@ -117,11 +124,16 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		if !utf8.Valid(body) || len(strings.TrimSpace(string(body))) == 0 {
-			fail(w, 400, "HTML must be non-empty UTF-8 text")
+		if len(strings.TrimSpace(string(body))) == 0 {
+			fail(w, 400, "HTML must be non-empty")
+			return
+		}
+		if req.HTMLMode == capture.HTMLModeFile && !utf8.Valid(body) {
+			fail(w, 400, "HTML must be UTF-8 in file mode")
 			return
 		}
 		req.HTML = string(body)
+		req.HTMLContentType = contentType
 	}
 	img, err := a.service.Get(r.Context(), req)
 	if err != nil {

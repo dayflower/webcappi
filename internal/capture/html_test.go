@@ -16,7 +16,53 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
+
+func TestLoopbackHTMLCharset(t *testing.T) {
+	b := fixtureBrowser(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	s, err := b.Open(ctx, filepath.Join(t.TempDir(), "user-data"), "Default", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	for _, tc := range []struct {
+		name, contentType, html, charset, text string
+	}{
+		{"header overrides meta", "text/html; charset=Shift_JIS", "<meta charset=utf-8><p id=sample>\x93\xfa\x96\x7b\x8c\xea</p>", "Shift_JIS", "日本語"},
+		{"meta without header charset", "text/html", "<meta charset=shift_jis><p id=sample>\x93\xfa\x96\x7b\x8c\xea</p>", "Shift_JIS", "日本語"},
+		{"UTF-8 header", "text/html; charset=utf-8", "<p id=sample>日本語</p>", "UTF-8", "日本語"},
+		{"BOM without header charset", "text/html", "\ufeff<p id=sample>日本語</p>", "UTF-8", "日本語"},
+		{"Windows-1252", "text/html; charset=windows-1252", "<p id=sample>caf\xe9</p>", "windows-1252", "café"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u, closeSource, err := prepareHTML(ctx, t.TempDir(), tc.html, HTMLModeLoopback, tc.contentType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := closeSource(); err != nil {
+					t.Error(err)
+				}
+			}()
+			if err := chromedp.Do(s.Context, chromedp.Navigate(u)); err != nil {
+				t.Fatal(err)
+			}
+			type documentInfo struct{ Charset, Text string }
+			got, err := chromedp.Run(s.Context, chromedp.Evaluate[documentInfo](`({Charset: document.characterSet, Text: document.querySelector('#sample').textContent})`))
+			if err != nil || got.Charset != tc.charset || got.Text != tc.text {
+				t.Fatalf("decoded document = %+v, error = %v; want charset %q, text %q", got, err, tc.charset, tc.text)
+			}
+		})
+	}
+}
 
 func TestHTMLCapture(t *testing.T) {
 	b := fixtureBrowser(t)

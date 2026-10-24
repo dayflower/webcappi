@@ -320,6 +320,7 @@ curl --get http://localhost:8080/capture \
 
 | Method and endpoint | Behavior |
 | --- | --- |
+| `GET /` | Public capture API guide with curl examples and parameter descriptions; no authentication required |
 | `GET /capture` | Capture an HTTP(S) URL as a direct `image/png` response |
 | `POST /capture` | Capture a raw HTML body as a direct `image/png` response |
 | `GET /healthz` | Process liveness; does not start Chromium |
@@ -335,9 +336,10 @@ curl 'http://localhost:8080/capture' \
   --output capture.png
 ```
 
-POST requires a non-empty UTF-8 HTML body. `max_post_bytes` sets the size limit
-in bytes (default: 1 MiB, or 1,048,576 bytes). JSON, form bodies, other charsets and compressed bodies are
-not accepted. `url` is not accepted on POST. The query parameters `profile`,
+POST requires a non-empty HTML body and `Content-Type: text/html`.
+`max_post_bytes` sets the size limit in bytes (default: 1 MiB, or 1,048,576 bytes).
+JSON, form bodies and compressed bodies are not accepted. `url` is not accepted
+on POST. The query parameters `profile`,
 `width`, `height`, `output_width`, `output_height`, `ready_selector` and `delay_ms`
 work as on GET.
 
@@ -345,17 +347,23 @@ The POST-only query parameter `html_mode` selects how Chromium opens the HTML:
 
 | `html_mode` | Behavior |
 | --- | --- |
-| `file` (default when omitted) | Write a private temporary file and open its `file:///` URL |
-| `loopback` | Serve the document from `http://127.0.0.1:<temporary-port>/` during the capture |
+| `file` (default when omitted) | Write a private temporary UTF-8 file and open its `file:///` URL |
+| `loopback` | Serve the original body and uploaded `Content-Type` from `http://127.0.0.1:<temporary-port>/` during the capture |
 
 For example, append `&html_mode=loopback` to the POST URL above to use HTTP.
 An empty, unknown or repeated `html_mode` is rejected with 400. GET does not
 accept this parameter. This is a request option, not a server configuration field.
 
 Both modes open a new capture tab, run scripts, and use the same disposable
-profile, viewport, readiness/asset checks and deadline. File mode adds a UTF-8
-BOM; loopback mode sends `Content-Type: text/html; charset=utf-8`, so neither
-requires a `<meta charset>` element. Temporary files and loopback listeners are
+profile, viewport, readiness/asset checks and deadline. File mode requires valid
+UTF-8 bytes and either an omitted charset or `charset=utf-8` (case-insensitive).
+Other charset values return HTTP 415; invalid UTF-8 bytes return 400. File mode
+adds a UTF-8 BOM, so no `<meta charset>` is needed.
+Loopback mode preserves the uploaded `Content-Type`, including charset parameters,
+and the body bytes without conversion or an added BOM. If charset is omitted,
+Chromium detects the encoding using the document's BOM, `<meta charset>` or its
+normal fallback behavior. Supply an explicit charset for predictable decoding.
+Temporary files and loopback listeners are
 removed on completion, failure or cancellation. The loopback server exposes
 only the posted document, not a directory or another application endpoint.
 
@@ -374,7 +382,7 @@ The local CLI continues to accept URLs through `-url`.
 ### API authentication
 
 Configure a shared Bearer token file to require authentication for HTTP requests
-other than `/healthz` and `/readyz`:
+other than `/`, `/healthz` and `/readyz`:
 
 ```json
 {
@@ -385,7 +393,11 @@ other than `/healthz` and `/readyz`:
 ```
 
 Omitting `auth` disables authentication for compatibility with existing
-configurations. When present, `auth.bearer_token_file` must be an absolute path.
+configurations. The guide at `/` is always public. It includes authentication
+instructions only when authentication is enabled and displays the configured
+capture dimension, pixel count, HTML body size and deadline limits. It does not
+expose tokens, configured profile names or filesystem paths.
+When present, `auth.bearer_token_file` must be an absolute path.
 The file must contain one token of 1–4096 ASCII bytes using the Bearer token
 alphabet (letters, digits, `-._~+/`, and optional trailing `=` padding).
 A single trailing LF or CRLF is accepted; spaces, empty files and multiple

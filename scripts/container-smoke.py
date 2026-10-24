@@ -241,6 +241,25 @@ def main():
             after_html_logs = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
             after_html_renders = (after_html_logs.stdout + after_html_logs.stderr).count("capture started")
             assert after_html_renders == before_html_renders + 7, "POST reused a previous render"
+
+            for content_type, meta in (("text/html; charset=shift_jis", "utf-8"),
+                                       ("text/html", "shift_jis")):
+                charset_html = (f"<!doctype html><meta charset={meta}><p>日本語</p>"
+                                r"<script>if(document.characterSet === 'Shift_JIS' && "
+                                r"document.querySelector('p').textContent === '\u65e5\u672c\u8a9e')"
+                                r"document.body.id='ready';</script>").encode("shift_jis")
+                charset_status, charset_headers, charset_png = get(
+                    html_path + "&html_mode=loopback", data=charset_html,
+                    content_type=content_type)
+                assert charset_status == 200, (content_type, charset_status, charset_png[:1024])
+                assert charset_headers["Content-Type"] == "image/png"
+                assert charset_headers["Cache-Control"] == "no-store"
+                assert struct.unpack(">II", charset_png[16:24]) == (320, 200)
+            assert get(html_path + "&html_mode=file", data=charset_html,
+                       content_type="text/html; charset=shift_jis")[0] == 415
+            assert get(html_path + "&html_mode=file", data=charset_html,
+                       content_type="text/html; charset=utf-8")[0] == 400
+
             (artifacts / "api-html.png").write_bytes(html_png)
             assert docker("exec", PREFIX + "-api", "find", "/work/captures", "-mindepth", "1") == ""
             after = hashlib.sha256()

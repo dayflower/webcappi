@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>webcappi — Capture API guide</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.65; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f7fa; color: #202936; }
+    main { max-width: 58rem; margin: auto; padding: 3rem 1.25rem; }
+    header { margin-bottom: 2.5rem; }
+    h1 { margin: 0; font-size: 2.5rem; letter-spacing: -.04em; }
+    h2 { margin-top: 2.5rem; font-size: 1.4rem; }
+    h3 { font-size: 1.1rem; }
+    p, li { max-width: 75ch; }
+    code { font-family: ui-monospace, monospace; font-size: .9em; overflow-wrap: anywhere; }
+    pre { padding: 1.25rem; border-radius: .6rem; background: #182335; color: #f0f4fa; overflow-x: auto; }
+    pre code { overflow-wrap: normal; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+    .parameters { min-width: 40rem; }
+    th, td { padding: .8rem; border-bottom: 1px solid #cbd3de; text-align: left; vertical-align: top; }
+    th { font-weight: 650; }
+    a { color: #175fba; text-underline-offset: .2em; }
+    nav { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111925; color: #e1e7ef; }
+      pre { background: #080e17; }
+      th, td { border-color: #3c495b; }
+      a { color: #95c3ff; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>webcappi</h1>
+    <p>Capture a URL or HTML document as a PNG image.</p>
+    <nav aria-label="Guide sections">
+      <a href="#quick-start">Quick start</a>
+      {{if .AuthEnabled}}
+      <a href="#authentication">Authentication</a>
+      {{end}}
+      <a href="#parameters">Parameters</a>
+      <a href="#behavior">Capture behavior</a>
+      <a href="#errors">Errors</a>
+    </nav>
+  </header>
+
+  <section id="quick-start">
+    <h2>Quick start</h2>
+    <p>Replace <code>http://localhost:8080</code> with your webcappi server URL in the examples below. Successful requests return <code>image/png</code>; these commands save it as <code>capture.png</code>.</p>
+    <h3>Capture a URL</h3>
+    <p>Send <code>GET /capture</code> with a URL that the webcappi server can reach.</p>
+    <pre><code>curl --fail --get 'http://localhost:8080/capture' \
+  --data-urlencode 'url=https://example.com/' \
+  --output capture.png</code></pre>
+    <h3>Capture HTML</h3>
+    <p>Send HTML directly as the body of <code>POST /capture</code>.</p>
+    <pre><code>curl --fail 'http://localhost:8080/capture' \
+  --header 'Content-Type: text/html; charset=utf-8' \
+  --data-binary '&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;&lt;h1&gt;Hello&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;' \
+  --output capture.png</code></pre>
+    <p>To send the contents of an existing HTML file instead, use <code>--data-binary @page.html</code>.</p>
+    <p>The body must be non-empty HTML with <code>Content-Type: text/html</code>. The default <code>file</code> mode requires UTF-8; use <code>html_mode=loopback</code> for other encodings. JSON, form bodies and compressed bodies are not accepted. Do not include the <code>url</code> parameter on POST.</p>
+  </section>
+
+  {{if .AuthEnabled}}
+  <section id="authentication">
+    <h2>Authentication</h2>
+    <p>Capture requests require Bearer authentication. Add the following option to each capture command, replacing <code>YOUR_TOKEN</code> with the token supplied by your administrator:</p>
+    <pre><code>--header 'Authorization: Bearer YOUR_TOKEN'</code></pre>
+    <p>Tokens belong in the Authorization header, not in query parameters or cookies. The API token is not forwarded to the captured site.</p>
+  </section>
+  {{end}}
+
+  <section id="parameters">
+    <h2>Parameters</h2>
+    <p>Options are query parameters. GET requires <code>url</code>; POST requires no query parameters. Unknown or repeated parameters are rejected.</p>
+    <div class="table-scroll" role="region" aria-label="Capture parameters" tabindex="0">
+      <table class="parameters">
+        <thead><tr><th scope="col">Parameter</th><th scope="col">Applies to</th><th scope="col">Meaning and default</th></tr></thead>
+        <tbody>
+          <tr><td><code>url</code></td><td>GET only</td><td>Required absolute HTTP(S) URL without embedded credentials. Maximum 8192 bytes.</td></tr>
+          <tr><td><code>width</code>, <code>height</code></td><td>GET / POST</td><td>Viewport in CSS pixels; defaults to 1280 × 720. Captures the visible area, not the full scrollable page.</td></tr>
+          <tr><td><code>output_width</code>, <code>output_height</code></td><td>GET / POST</td><td>PNG dimensions in pixels. Each omitted dimension uses the corresponding viewport dimension.</td></tr>
+          <tr><td><code>profile</code></td><td>GET / POST</td><td>Profile name; defaults to <code>default</code>. Ask your administrator for other configured names. Empty or unknown names are rejected.</td></tr>
+          <tr><td><code>ready_selector</code></td><td>GET / POST</td><td>CSS selector for an element to wait for before capture. The element may be hidden. Omit to skip this additional check; maximum 1024 bytes.</td></tr>
+          <tr><td><code>delay_ms</code></td><td>GET / POST</td><td>Additional wait after readiness checks, in milliseconds. Integer from 0 to 300000; defaults to 0.</td></tr>
+          <tr><td><code>html_mode</code></td><td>POST only</td><td><code>file</code> (default) opens a temporary UTF-8 file. <code>loopback</code> serves the original document and uploaded <code>Content-Type</code> over temporary local HTTP.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Viewport and output size</h3>
+    <p>The viewport determines the page layout. The output size determines the finished PNG dimensions. The image is resized proportionally to fill the output canvas and cropped at the center when aspect ratios differ. It is never stretched or padded. All dimensions must be positive integers within the server's configured limits.</p>
+    <h3>Wait for page readiness</h3>
+    <p>Wait for an element matching <code>#ready</code>, then wait one additional second before capture:</p>
+    <pre><code>curl --fail --get 'http://localhost:8080/capture' \
+  --data-urlencode 'url=https://example.com/' \
+  --data-urlencode 'ready_selector=#ready' \
+  --data-urlencode 'delay_ms=1000' \
+  --output capture.png</code></pre>
+    <p>Replace the URL and selector with a page that provides your readiness signal. A missing selector match causes the request to time out.</p>
+  </section>
+
+  <section id="behavior">
+    <h2>Capture behavior</h2>
+    <ul>
+      <li>GET images may be cached according to server configuration. Conditional GET requests can return 304 using an ETag. POST always generates a new image and returns <code>Cache-Control: no-store</code>.</li>
+      <li>Capture waits for the document load, configured readiness selectors, fonts, visible images and two animation frames. Broken visible images fail the capture. Use <code>ready_selector</code> for application-specific readiness; there is no network-idle check.</li>
+      <li><code>delay_ms</code> shares the overall capture deadline. It does not extend that deadline, run again on a cache hit, or recheck readiness after the delay.</li>
+      <li>For posted HTML, use absolute resource URLs or <code>&lt;base href="https://example.com/"&gt;</code> to resolve relative paths. A base URL does not give the document that site's origin or storage access. Browser origin and CORS rules still apply.</li>
+      <li>In <code>loopback</code> mode, the body and uploaded <code>Content-Type</code> are preserved without encoding conversion or an added BOM. If the header omits charset, Chromium uses its normal encoding detection, including a BOM or <code>&lt;meta charset&gt;</code>. In <code>file</code> mode, charset must be omitted or UTF-8; other charset values return 415. The body must be valid UTF-8 and receives a UTF-8 BOM.</li>
+    </ul>
+    <h3>Server limits</h3>
+    <p>The following limits apply to capture requests on this server. Viewport and output dimensions are checked independently.</p>
+    <div class="table-scroll" role="region" aria-label="Server capture limits" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">Limit</th><th scope="col">Value</th></tr></thead>
+        <tbody>
+          <tr><td>Maximum width</td><td>{{.MaxWidth}} pixels</td></tr>
+          <tr><td>Maximum height</td><td>{{.MaxHeight}} pixels</td></tr>
+          <tr><td>Maximum viewport or output pixel count</td><td>{{.MaxPixels}} pixels</td></tr>
+          <tr><td>Maximum HTML body size</td><td>{{.MaxPOSTBytes}} bytes</td></tr>
+          <tr><td>Overall capture deadline</td><td>{{.CaptureTimeoutSeconds}} seconds</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="errors">
+    <h2>Errors</h2>
+    <p>Errors return JSON with an <code>error</code> field and <code>Cache-Control: no-store</code>. The examples use <code>curl --fail</code> to report HTTP errors rather than save an error response as a PNG.</p>
+    <pre><code>{"error":"page capture failed"}</code></pre>
+    <div class="table-scroll" role="region" aria-label="HTTP error responses" tabindex="0">
+      <table>
+        <thead><tr><th scope="col">Status</th><th scope="col">Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td>Invalid or missing parameter, URL, dimensions or HTML body.</td></tr>
+          {{if .AuthEnabled}}
+          <tr><td>401</td><td>Missing or invalid Bearer token when authentication is enabled.</td></tr>
+          {{end}}
+          <tr><td>404</td><td>Unknown endpoint.</td></tr>
+          <tr><td>405</td><td>Unsupported HTTP method.</td></tr>
+          <tr><td>413</td><td>HTML body exceeds the configured limit.</td></tr>
+          <tr><td>415</td><td>Unsupported HTML media type, charset or content encoding.</td></tr>
+          <tr><td>502</td><td>Browser, navigation, target HTTP status or asset failure.</td></tr>
+          <tr><td>503</td><td>Capacity exhausted, capture canceled or server shutting down. Overload responses include <code>Retry-After: 1</code>.</td></tr>
+          <tr><td>504</td><td>Overall capture deadline exceeded.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+</body>
+</html>

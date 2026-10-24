@@ -18,14 +18,14 @@ const (
 	HTMLModeLoopback = "loopback"
 )
 
-func prepareHTML(ctx context.Context, work, html, mode string) (string, func() error, error) {
+func prepareHTML(ctx context.Context, work, html, mode, contentType string) (string, func() error, error) {
 	switch mode {
 	case "", HTMLModeFile:
 		u, err := writeHTML(work, html)
 		// The capture's work-directory cleanup owns the file's lifetime.
 		return u, func() error { return nil }, err
 	case HTMLModeLoopback:
-		return serveHTML(ctx, html)
+		return serveHTML(ctx, html, contentType)
 	default:
 		return "", nil, fmt.Errorf("unsupported HTML mode %q", mode)
 	}
@@ -49,7 +49,11 @@ func writeHTML(work, html string) (string, error) {
 
 // Expose only the posted document, on an ephemeral IPv4 loopback listener.
 // The returned cleanup closes connections and waits for the serving goroutine.
-func serveHTML(ctx context.Context, html string) (string, func() error, error) {
+func serveHTML(ctx context.Context, html, contentType string) (string, func() error, error) {
+	// Direct renderer callers without HTTP request headers retain the UTF-8 default.
+	if contentType == "" {
+		contentType = "text/html; charset=utf-8"
+	}
 	var lc net.ListenConfig
 	listener, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -69,7 +73,7 @@ func serveHTML(ctx context.Context, html string) (string, func() error, error) {
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Type", contentType)
 			_, _ = io.WriteString(w, html)
 		}),
 	}

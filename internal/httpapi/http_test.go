@@ -345,6 +345,52 @@ func TestHTMLModeQuery(t *testing.T) {
 	}
 }
 
+func TestHTMLCharset(t *testing.T) {
+	for _, tc := range []struct {
+		name, query, contentType, body string
+		status                         int
+	}{
+		{"default UTF-8", "", "text/html; charset=UTF-8", "<p>日本語</p>", 200},
+		{"file unspecified", "file", "text/html", "<p>日本語</p>", 200},
+		{"file Shift JIS", "file", "text/html; charset=shift_jis", "<p>\x93\xfa\x96\x7b\x8c\xea</p>", 415},
+		{"file invalid UTF-8", "file", "text/html; charset=utf-8", "<p>\xff</p>", 400},
+		{"loopback Shift JIS", "loopback", `text/html; charset="Shift_JIS"; language=ja`, "<p>\x93\xfa\x96\x7b\x8c\xea</p>", 200},
+		{"loopback unspecified", "loopback", "text/html", "<meta charset=shift_jis><p>\x93\xfa\x96\x7b\x8c\xea</p>", 200},
+		{"loopback UTF-8", "loopback", "text/html; charset=UTF-8", "<p>日本語</p>", 200},
+		{"loopback empty", "loopback", "text/html; charset=shift_jis", "", 400},
+		{"loopback whitespace", "loopback", "text/html", " \r\n\t", 400},
+		{"loopback wrong media type", "loopback", "application/json", "{}", 415},
+		{"loopback missing media type", "loopback", "", "<p>hello</p>", 415},
+		{"loopback malformed media type", "loopback", "text/html; charset", "<p>hello</p>", 415},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			api, _ := setup(t, func(_ context.Context, req capture.Request) ([]byte, error) {
+				calls++
+				if req.HTML != tc.body || req.HTMLContentType != tc.contentType {
+					t.Errorf("HTML bytes or Content-Type changed: %q, %q", req.HTML, req.HTMLContentType)
+				}
+				return []byte("png"), nil
+			})
+			path := "/capture"
+			if tc.query != "" {
+				path += "?html_mode=" + tc.query
+			}
+			w := post(api, path, tc.body, tc.contentType, "")
+			if w.Code != tc.status {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.status, w.Body)
+			}
+			wantCalls := 0
+			if tc.status == 200 {
+				wantCalls = 1
+			}
+			if calls != wantCalls {
+				t.Fatalf("renderer calls = %d, want %d", calls, wantCalls)
+			}
+		})
+	}
+}
+
 func TestHTMLInputValidation(t *testing.T) {
 	var calls atomic.Int32
 	api, _ := setup(t, func(context.Context, capture.Request) ([]byte, error) {
