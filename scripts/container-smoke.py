@@ -51,6 +51,16 @@ def main():
         for path in [template, *template.rglob("*")]:
             path.chmod(0o755 if path.is_dir() else 0o644)
         shutil.copytree(ROOT / "testdata/page", data / "page")
+        (data / "page/fixture-server.py").write_text(
+            "from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer\n"
+            "class Handler(SimpleHTTPRequestHandler):\n"
+            "    def translate_path(self, path):\n"
+            "        return super().translate_path('/' + path[len('/plain/'):] if path.startswith('/plain/') else path)\n"
+            "    def send_header(self, name, value):\n"
+            "        if self.path == '/plain/' and name.lower() == 'last-modified':\n"
+            "            return\n"
+            "        super().send_header(name, value)\n"
+            "ThreadingHTTPServer(('0.0.0.0', 8000), Handler).serve_forever()\n")
         profile = dict(user_data_dir="/template/user-data", profile_directory="Default",
                        extensions=["/src/testdata/extension"],
                        ready_selectors=["#webcappi-extension-ready", "html"])
@@ -58,8 +68,8 @@ def main():
         # This exception is confined to disposable tests on this host. Production
         # examples preserve the sandbox unless explicitly configured otherwise.
         cfg = dict(no_sandbox=True, work_dir="/work/captures", concurrency=1,
-                   queue_size=1, max_requests=8, capture_timeout_seconds=10,
-                   cache_ttl_seconds=2, max_post_bytes=1024, profiles={"default": profile})
+                   queue_size=8, max_requests=8, capture_timeout_seconds=10,
+                   max_age_seconds=2, max_post_bytes=1024, profiles={"default": profile})
         token = "synthetic-smoke-token"
         (data / "token").write_text(token + "\n")
         (data / "token").chmod(0o644)
@@ -75,7 +85,7 @@ def main():
             docker("network", "create", PREFIX)
             docker("run", *platform_args, "-d", "--name", PREFIX + "-page", "--network", PREFIX,
                    "--network-alias", "fixture", "--read-only", "-v", f"{data / 'page'}:/srv:ro",
-                   "-w", "/srv", "python:3.13-alpine", "python", "-m", "http.server", "8000")
+                   "-w", "/srv", "python:3.13-alpine", "python", "/srv/fixture-server.py")
             created.append(PREFIX + "-page")
             docker("run", *platform_args, "-d", "--name", PREFIX + "-api", "--network", PREFIX,
                    "-p", "127.0.0.1::8080", "--read-only", "--shm-size=512m",
@@ -128,14 +138,24 @@ def main():
                 assert json.loads(body) == {"error": "unauthorized"}
             assert get(capture(access_token=token), authorization=None)[0] == 401
 
+            def render_count():
+                logs = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
+                return (logs.stdout + logs.stderr).count("capture started")
+
             original = hashlib.sha256()
             for path in sorted(template.rglob("*")):
                 if path.is_file():
                     original.update(path.read_bytes())
-            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
                 results = list(pool.map(lambda _: get(capture()), range(6)))
-            status, headers, png = results[0]
-            assert all(r[0] == 200 and r[2] == png for r in results)
+            assert all(r[0] == 200 for r in results), [(r[0], r[2][:256] if r[0] != 200 else len(r[2])) for r in results]
+            for _, result_headers, result_png in results:
+                assert struct.unpack(">II", result_png[16:24]) == (1280, 720)
+                assert result_headers["ETag"] == '"' + hashlib.sha256(result_png).hexdigest() + '"'
+            assert render_count() == 6, "unconditional requests shared a capture"
+            # Establish a current validator after the independent concurrent jobs.
+            status, headers, png = get(capture())
+            assert status == 200, (status, png[:256])
             assert headers["Content-Type"] == "image/png"
             assert struct.unpack(">II", png[16:24]) == (1280, 720)
             assert get(capture(), headers["ETag"])[0] == 304
@@ -144,7 +164,16 @@ def main():
             assert get(capture(), headers["ETag"], authorization="Bearer wrong-token")[0] == 401
             # Docker sends slog's stderr separately from stdout.
             logproc = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
-            assert (logproc.stdout + logproc.stderr).count("capture started") == 1
+            assert (logproc.stdout + logproc.stderr).count("capture started") == 7
+            # Expired metadata revalidates the source Last-Modified value without
+            # generating a PNG. Ordinary GET must still generate a new image.
+            before_validation = render_count()
+            time.sleep(2.1)
+            revalidated = get(capture(), headers["ETag"])
+            assert revalidated[0] == 304, revalidated
+            assert render_count() == before_validation, "source 304 generated a PNG"
+            assert get(capture())[0] == 200
+            assert render_count() == before_validation + 1, "unconditional GET reused PNG bytes"
             (artifacts / "api.png").write_bytes(png)
             (data / "page/index.html").write_text((data / "page/index.html").read_text().replace("#eef2f6", "#ffcc88"))
             time.sleep(2.1)
@@ -161,6 +190,21 @@ def main():
             assert get(capture(ready_selector="#never-ready"))[0] == 504
             assert get(capture(url="http://fixture:8000/missing"))[0] == 502
             assert get(capture(width=99999))[0] == 400
+
+            # A source without validators uses only our bounded freshness window.
+            plain_path = capture(url="http://fixture:8000/plain/")
+            before_plain = render_count()
+            plain = get(plain_path)
+            assert plain[0] == 200, (plain[0], plain[2][:256])
+            assert get(plain_path, plain[1]["ETag"])[0] == 304
+            assert render_count() == before_plain + 1, "fresh fallback metadata generated a PNG"
+            time.sleep(2.1)
+            plain_expired = get(plain_path, plain[1]["ETag"])
+            assert plain_expired[0] in (200, 304), plain_expired
+            if plain_expired[0] == 200:
+                assert plain_expired[1]["ETag"] != plain[1]["ETag"]
+                assert plain_expired[2] != plain[2]
+            assert render_count() == before_plain + 2, "expired fallback metadata skipped capture"
 
             resized_path = capture(width=1200, height=800, output_width=600, output_height=600)
             resized_status, resized_headers, resized_png = get(resized_path)
@@ -270,7 +314,7 @@ def main():
             docker("stop", "-t", "10", PREFIX + "-api")
             state = json.loads(docker("inspect", PREFIX + "-api"))[0]["State"]
             assert state["ExitCode"] == 0, state
-            print("PASS: real container REST, Bearer authentication, private DNS, URL/HTML PNG, extension, coalescing/cache, fresh ETag, errors, cleanup, shutdown")
+            print("PASS: real container REST, Bearer authentication, private DNS, independent URL/HTML PNG, extension, metadata/source validation, fresh ETag, errors, cleanup, shutdown")
         finally:
             for container in reversed(created):
                 docker("rm", "-f", container, check=False)

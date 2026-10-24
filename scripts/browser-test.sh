@@ -23,7 +23,7 @@ docker run --platform "$platform" --name "$container" --shm-size=512m \
   -e WEBCAPPI_TEST_BROWSER=/opt/chrome/chrome -e WEBCAPPI_TEST_NO_SANDBOX=1 \
   -e WEBCAPPI_TEST_ARTIFACTS=/home/webcappi \
   "$image" \
-  xvfb-run -a /app/capture.test -test.v -test.timeout=90s
+  xvfb-run -a /app/capture.test -test.v -test.timeout=180s
 docker cp "$container:/home/webcappi/extension.png" "$artifacts/extension.png"
 docker cp "$container:/home/webcappi/html.png" "$artifacts/html.png"
 docker cp "$container:/home/webcappi/html-loopback.png" "$artifacts/html-loopback.png"

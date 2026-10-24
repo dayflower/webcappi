@@ -115,7 +115,7 @@ func run(args []string) (err error) {
 		fmt.Println("configuration, bundle and browser version verified")
 		return nil
 	}
-	s := service.New(ctx, c, renderer.Capture)
+	s := service.New(ctx, c, renderer.CaptureWithMetadata)
 	defer s.Close()
 	api := httpapi.New(c, s, checkFiles)
 	if args[0] == "capture" {

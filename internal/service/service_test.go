@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,291 +16,125 @@ func request(url string) capture.Request {
 	return capture.Request{URL: url, Width: 800, Height: 480, ProfileName: "default", Profile: capture.Profile{ProfileDirectory: "Default"}}
 }
 
-func TestCacheAndCoalescing(t *testing.T) {
-	cfg := config.Defaults()
-	var calls atomic.Int32
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	s := New(t.Context(), cfg, func(context.Context, capture.Request) ([]byte, error) {
-		if calls.Add(1) == 1 {
-			close(entered)
-			<-release
-		}
-		return []byte("PNG"), nil
-	})
-	defer s.Close()
-	const n = 16
-	var wg sync.WaitGroup
-	results := make(chan *Image, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			img, err := s.Get(t.Context(), request("http://fixture"))
-			if err != nil {
-				t.Error(err)
+func TestIndependentCaptures(t *testing.T) {
+	for _, html := range []string{"", "<p>hello</p>"} {
+		t.Run(html, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Concurrency = 4
+			var calls atomic.Int32
+			entered := make(chan struct{}, 4)
+			release := make(chan struct{})
+			s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) (capture.Result, error) {
+				calls.Add(1)
+				entered <- struct{}{}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return capture.Result{}, ctx.Err()
+				}
+				return capture.Result{PNG: []byte("PNG")}, nil
+			})
+			defer s.Close()
+			req := request("http://fixture")
+			req.HTML = html
+			var wg sync.WaitGroup
+			for range 4 {
+				wg.Go(func() {
+					if _, err := s.Get(t.Context(), req); err != nil {
+						t.Error(err)
+					}
+				})
 			}
-			results <- img
-		}()
-	}
-	<-entered
-	deadline := time.After(2 * time.Second)
-	for {
-		s.mu.Lock()
-		waiters := s.flights[Key(request("http://fixture"))].waiters
-		s.mu.Unlock()
-		if waiters == n {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("waiters did not join")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
-	close(release)
-	wg.Wait()
-	close(results)
-	var first *Image
-	for image := range results {
-		if first == nil {
-			first = image
-		}
-		if image != first {
-			t.Fatal("coalesced results differ")
-		}
-	}
-	hit, err := s.Get(t.Context(), request("http://fixture"))
-	if err != nil || hit != first || calls.Load() != 1 {
-		t.Fatalf("cache missed: %v %d", err, calls.Load())
-	}
-	// Simulate expiry without sleeping for the public configuration's one-second minimum.
-	s.mu.Lock()
-	first.Expires = time.Now().Add(-time.Second)
-	s.mu.Unlock()
-	next, err := s.Get(t.Context(), request("http://fixture"))
-	if err != nil || next == first || calls.Load() != 2 {
-		t.Fatal("expired entry did not render again")
-	}
-	if next.ETag != first.ETag {
-		t.Fatal("ETag must depend on content")
-	}
-	changed := request("http://fixture")
-	changed.Profile = capture.Profile{
-		UserDataDir: "/other/user-data", ProfileDirectory: "Other",
-		Extensions: []string{"/other/extension"}, ReadySelectors: []string{"#extension-ready"},
-	}
-	sameProfile, err := s.Get(t.Context(), changed)
-	if err != nil || sameProfile != next || calls.Load() != 2 {
-		t.Fatalf("profile settings bypassed the named profile cache: %v %d", err, calls.Load())
-	}
-	changed = request("http://fixture")
-	changed.ProfileName = "other"
-	_, _ = s.Get(t.Context(), changed)
-	changed = request("http://fixture")
-	changed.ReadySelector = "#ready"
-	_, _ = s.Get(t.Context(), changed)
-	changed = request("http://fixture")
-	changed.Width = 801
-	_, _ = s.Get(t.Context(), changed)
-	changed = request("http://fixture")
-	changed.Height = 481
-	_, _ = s.Get(t.Context(), changed)
-	changed = request("http://fixture")
-	changed.OutputWidth = 400
-	_, _ = s.Get(t.Context(), changed)
-	changed = request("http://fixture")
-	changed.OutputHeight = 240
-	_, _ = s.Get(t.Context(), changed)
-	_, _ = s.Get(t.Context(), request("http://other-fixture"))
-	if calls.Load() != 9 {
-		t.Fatal("request parameters missing from key")
-	}
-	explicit := request("http://fixture")
-	explicit.OutputWidth, explicit.OutputHeight = explicit.Width, explicit.Height
-	if Key(explicit) != Key(request("http://fixture")) {
-		t.Fatal("explicit default output size must reuse the same cache key")
+			for range 4 {
+				select {
+				case <-entered:
+				case <-time.After(2 * time.Second):
+					t.Fatal("identical requests were coalesced")
+				}
+			}
+			close(release)
+			wg.Wait()
+			first, err := s.Get(t.Context(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := s.Get(t.Context(), req)
+			if err != nil || first == next || calls.Load() != 6 || first.ETag != next.ETag {
+				t.Fatal("images were retained or content tag changed", err)
+			}
+		})
 	}
 }
 
-func TestHTMLRequestsAreIndependent(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Concurrency, cfg.QueueSize = 1, 1
-	var calls atomic.Int32
-	entered := make(chan struct{}, 4)
-	release := make(chan struct{})
-	s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) ([]byte, error) {
-		calls.Add(1)
-		entered <- struct{}{}
-		select {
-		case <-release:
-			return []byte("png"), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	})
-	defer s.Close()
-	req := request("")
-	req.HTML = "<p>identical HTML</p>"
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	first := make(chan error, 1)
-	go func() { _, err := s.Get(ctx, req); first <- err }()
-	<-entered
-	second := make(chan error, 1)
-	go func() { _, err := s.Get(t.Context(), req); second <- err }()
+func waitActive(t *testing.T, s *Service, want int) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for {
+	for time.Now().Before(deadline) {
 		s.mu.Lock()
-		n := len(s.flights)
+		n := s.active
 		s.mu.Unlock()
-		if n == 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("identical HTML requests were coalesced")
+		if n == want {
+			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := s.Get(t.Context(), req); !errors.Is(err, ErrBusy) {
-		t.Fatal("HTML jobs did not respect queue capacity", err)
-	}
-	cancel()
-	if err := <-first; !errors.Is(err, context.Canceled) {
-		t.Fatal("first HTML request was not canceled", err)
-	}
-	<-entered
-	close(release)
-	if err := <-second; err != nil {
-		t.Fatal("canceling one HTML request affected another", err)
-	}
-	if _, err := s.Get(t.Context(), req); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 3 || len(s.cache) != 0 || s.bytes != 0 {
-		t.Fatal("HTML results were cached")
-	}
+	t.Fatal("job count did not reach", want)
 }
 
 func TestBoundsCancellationAndFailure(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Concurrency = 1
 	cfg.QueueSize = 1
-	cfg.CacheMaxBytes = 5
-	cfg.CacheMaxEntries = 1
-	entered := make(chan struct{}, 32)
-	var active, maxActive atomic.Int32
-	var blocked atomic.Bool
-	blocked.Store(true)
-	render := func(ctx context.Context, r capture.Request) ([]byte, error) {
+	entered := make(chan struct{}, 4)
+	var active, maximum atomic.Int32
+	s := New(t.Context(), cfg, func(ctx context.Context, req capture.Request) (capture.Result, error) {
 		n := active.Add(1)
 		defer active.Add(-1)
-		if n > maxActive.Load() {
-			maxActive.Store(n)
+		if n > maximum.Load() {
+			maximum.Store(n)
 		}
 		entered <- struct{}{}
-		if blocked.Load() {
-			<-ctx.Done()
-			return nil, ctx.Err()
+		if req.URL == "fail" {
+			return capture.Result{}, errors.New("failed")
 		}
-		if r.URL == "fail" {
-			return nil, errors.New("failed")
+		if req.URL == "large" {
+			return capture.Result{PNG: make([]byte, cfg.MaxPNGBytes+1)}, nil
 		}
-		return []byte(r.URL), nil
-	}
-	s := New(t.Context(), cfg, render)
-	defer s.Close()
-	ctx, stop := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { _, e := s.Get(ctx, request("one")); done <- e }()
-	<-entered
-	queued, stopQueued := context.WithCancel(t.Context())
-	doneQ := make(chan error, 1)
-	go func() { _, e := s.Get(queued, request("two")); doneQ <- e }()
-	for {
-		s.mu.Lock()
-		n := len(s.flights)
-		s.mu.Unlock()
-		if n == 2 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if _, err := s.Get(t.Context(), request("three")); !errors.Is(err, ErrBusy) {
-		t.Fatal("unique queue not bounded", err)
-	}
-	stop()
-	stopQueued()
-	<-done
-	<-doneQ
-	for {
-		s.mu.Lock()
-		n := len(s.flights)
-		s.mu.Unlock()
-		if n == 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if active.Load() != 0 || maxActive.Load() != 1 {
-		t.Fatal("render not canceled or concurrency exceeded")
-	}
-	blocked.Store(false)
-	for _, url := range []string{"abc", "def", "oversized"} {
-		if _, err := s.Get(t.Context(), request(url)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	s.mu.Lock()
-	if s.bytes > cfg.CacheMaxBytes || s.lru.Len() > 1 {
-		t.Fatal("cache exceeded bounds")
-	}
-	s.mu.Unlock()
-	if _, err := s.Get(t.Context(), request("fail")); err == nil {
-		t.Fatal("expected failure")
-	}
-	if _, ok := s.cache[Key(request("fail"))]; ok {
-		t.Fatal("failure cached")
-	}
-}
-
-func TestOneWaiterCancellationDoesNotCancelOthers(t *testing.T) {
-	cfg := config.Defaults()
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) ([]byte, error) {
-		close(entered)
-		select {
-		case <-release:
-			return []byte("png"), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		<-ctx.Done()
+		// Late successful returns must still report cancellation.
+		return capture.Result{PNG: []byte("PNG")}, nil
 	})
 	defer s.Close()
-	ctx, cancel := context.WithCancel(t.Context())
-	one := make(chan error, 1)
-	two := make(chan error, 1)
-	go func() { _, err := s.Get(ctx, request("x")); one <- err }()
+	first, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	second, cancelSecond := context.WithCancel(t.Context())
+	defer cancelSecond()
+	one, two := make(chan error, 1), make(chan error, 1)
+	go func() { _, err := s.Get(first, request("same")); one <- err }()
 	<-entered
-	go func() { _, err := s.Get(t.Context(), request("x")); two <- err }()
-	for {
-		s.mu.Lock()
-		n := s.flights[Key(request("x"))].waiters
-		s.mu.Unlock()
-		if n == 2 {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	go func() { _, err := s.Get(second, request("same")); two <- err }()
+	waitActive(t, s, 2)
+	if _, err := s.Get(t.Context(), request("same")); !errors.Is(err, ErrBusy) {
+		t.Fatal("capacity exceeded", err)
+	}
+	cancelSecond()
+	if err := <-two; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if active.Load() != 1 {
+		t.Fatal("queued cancellation affected active request")
 	}
 	cancel()
 	if err := <-one; !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	close(release)
-	if err := <-two; err != nil {
-		t.Fatal(err)
+	waitActive(t, s, 0)
+	if active.Load() != 0 || maximum.Load() != 1 {
+		t.Fatal("concurrency or cleanup failed")
+	}
+	for _, url := range []string{"fail", "fail", "large"} {
+		if _, err := s.Get(t.Context(), request(url)); err == nil {
+			t.Fatal("failure ignored", url)
+		}
 	}
 }
 
@@ -309,22 +142,49 @@ func TestJobTimeoutAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.CaptureTimeoutSeconds = 1
 	entered := make(chan struct{}, 2)
-	s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) ([]byte, error) {
+	s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) (capture.Result, error) {
 		entered <- struct{}{}
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return capture.Result{}, ctx.Err()
 	})
 	if _, err := s.Get(t.Context(), request("slow")); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("timeout missing", err)
 	}
+	<-entered
 	done := make(chan error, 1)
 	go func() { _, err := s.Get(t.Context(), request("shutdown")); done <- err }()
 	<-entered
 	s.Close()
-	if err := <-done; err == nil {
-		t.Fatal("shutdown did not cancel job")
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal("shutdown did not cancel job", err)
 	}
 	if _, err := s.Get(t.Context(), request("late")); !errors.Is(err, ErrClosed) {
-		t.Fatal(fmt.Sprint(err))
+		t.Fatal(err)
+	}
+}
+
+func TestMetadataKey(t *testing.T) {
+	base := request("http://fixture")
+	explicit := base
+	explicit.OutputWidth, explicit.OutputHeight = base.Width, base.Height
+	if Key(base) != Key(explicit) {
+		t.Fatal("default output dimensions differ")
+	}
+	changes := []func(*capture.Request){
+		func(r *capture.Request) { r.URL += "#fragment" },
+		func(r *capture.Request) { r.Width++ },
+		func(r *capture.Request) { r.Height++ },
+		func(r *capture.Request) { r.OutputWidth = 100 },
+		func(r *capture.Request) { r.OutputHeight = 100 },
+		func(r *capture.Request) { r.ProfileName = "other" },
+		func(r *capture.Request) { r.ReadySelector = "#ready" },
+		func(r *capture.Request) { r.DelayMS = 100 },
+	}
+	for _, change := range changes {
+		changed := base
+		change(&changed)
+		if Key(changed) == Key(base) {
+			t.Fatal("capture conditions missing from key")
+		}
 	}
 }

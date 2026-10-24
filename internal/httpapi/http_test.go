@@ -17,14 +17,17 @@ import (
 	"github.com/dayflower/webcappi/internal/service"
 )
 
-func setup(t *testing.T, render service.RenderFunc) (*API, *service.Service) {
+func setup(t *testing.T, render func(context.Context, capture.Request) ([]byte, error)) (*API, *service.Service) {
 	t.Helper()
 	c := config.Defaults()
 	c.Profiles = map[string]capture.Profile{
 		"default":   {ProfileDirectory: "Default"},
 		"alternate": {ProfileDirectory: "Alternate"},
 	}
-	s := service.New(t.Context(), c, render)
+	s := service.New(t.Context(), c, func(ctx context.Context, req capture.Request) (capture.Result, error) {
+		png, err := render(ctx, req)
+		return capture.Result{PNG: png}, err
+	})
 	t.Cleanup(s.Close)
 	return New(c, s, nil), s
 }
@@ -62,8 +65,8 @@ func TestCaptureOutputSizeQuery(t *testing.T) {
 			t.Fatalf("GET %s: %d %s", tc.query, w.Code, w.Body)
 		}
 	}
-	if calls.Load() != 8 {
-		t.Fatalf("explicit defaults did not share the cache: %d renders", calls.Load())
+	if calls.Load() != 9 {
+		t.Fatalf("unconditional GET did not render: %d renders", calls.Load())
 	}
 	w := post(api, "/capture?width=1200&height=800&output_width=600&output_height=600", "<p>hello</p>", "text/html", "")
 	if w.Code != 200 || w.Body.String() != "1200x800/600x600" {
@@ -83,7 +86,7 @@ func TestCaptureOutputSizeQuery(t *testing.T) {
 			t.Fatalf("POST %s: %d %s", query, w.Code, w.Body)
 		}
 	}
-	if calls.Load() != 9 {
+	if calls.Load() != 10 {
 		t.Fatal("invalid dimensions reached the renderer")
 	}
 }
@@ -109,8 +112,8 @@ func TestCaptureDelayQuery(t *testing.T) {
 			t.Fatalf("GET %s: status=%d body=%s", tc.query, w.Code, w.Body)
 		}
 	}
-	if calls.Load() != 4 {
-		t.Fatalf("delay cache separation or zero normalization failed: %d renders", calls.Load())
+	if calls.Load() != 6 {
+		t.Fatalf("unconditional delay requests did not render: %d renders", calls.Load())
 	}
 	for _, value := range []string{"0", "1000", "300000"} {
 		if w := post(api, "/capture?delay_ms="+value, "<p>hello</p>", "text/html", ""); w.Code != 200 || w.Body.String() != value {
@@ -129,7 +132,7 @@ func TestCaptureDelayQuery(t *testing.T) {
 			t.Fatalf("POST %s: status=%d body=%s", query, w.Code, w.Body)
 		}
 	}
-	if calls.Load() != 7 {
+	if calls.Load() != 9 {
 		t.Fatal("invalid delay rendered")
 	}
 }
@@ -161,8 +164,8 @@ func TestDefaultProfileSelection(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s", tc.path, w.Code, w.Body)
 		}
 	}
-	if calls.Load() != 2 {
-		t.Fatal("omitted and explicit default profiles did not share the cache")
+	if calls.Load() != 3 {
+		t.Fatal("unconditional profile requests did not render")
 	}
 	for _, tc := range []struct {
 		path, want string
@@ -180,42 +183,40 @@ func TestDefaultProfileSelection(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s", query, w.Code, w.Body)
 		}
 	}
-	if calls.Load() != 5 {
+	if calls.Load() != 6 {
 		t.Fatal("invalid profiles rendered or HTML requests reused the cache")
 	}
 }
 
-func TestPNGCacheAndConditionalFreshness(t *testing.T) {
+func TestMetadataAndConditionalFreshness(t *testing.T) {
 	var calls atomic.Int32
 	api, _ := setup(t, func(context.Context, capture.Request) ([]byte, error) {
 		n := calls.Add(1)
 		return []byte{137, 'P', 'N', 'G', byte(n)}, nil
 	})
+	now := time.Now()
+	api.now = func() time.Time { return now }
 	first := get(api, valid, "")
 	if first.Code != 200 || first.Header().Get("Content-Type") != "image/png" {
 		t.Fatal(first)
 	}
 	tag := first.Header().Get("ETag")
-	time.Sleep(1100 * time.Millisecond)
+	now = now.Add(1100 * time.Millisecond)
 	cached := get(api, valid, "W/\"unrelated\", W/"+tag)
-	if cached.Code != 304 || calls.Load() != 1 {
-		t.Fatal("conditional cache failed")
+	if cached.Code != 304 || calls.Load() != 1 || cached.Body.Len() != 0 {
+		t.Fatal("metadata validation rendered or returned a body")
 	}
-	age, _ := strconv.Atoi(cached.Header().Get("Age"))
-	if age < 1 {
+	if cached.Header().Get("Age") != "2" {
 		t.Fatal("freshness extended")
 	}
-	// Expire by waiting with a deliberately short TTL in a separate service.
-	c := api.cfg
-	c.CacheTTLSeconds = 1
-	s := service.New(t.Context(), c, func(context.Context, capture.Request) ([]byte, error) { return []byte{byte(calls.Add(1))}, nil })
-	defer s.Close()
-	short := New(c, s, nil)
-	old := get(short, valid, "")
-	time.Sleep(1100 * time.Millisecond)
-	fresh := get(short, valid, old.Header().Get("ETag"))
-	if fresh.Code != 200 || fresh.Header().Get("ETag") == old.Header().Get("ETag") {
-		t.Fatal("expired PNG incorrectly returned 304")
+	now = now.Add(time.Minute)
+	fresh := get(api, valid, tag)
+	if fresh.Code != 200 || fresh.Header().Get("ETag") == tag || calls.Load() != 2 {
+		t.Fatal("expired validator did not render again")
+	}
+	unconditional := get(api, valid, "")
+	if unconditional.Code != 200 || calls.Load() != 3 {
+		t.Fatal("PNG bytes were reused")
 	}
 }
 

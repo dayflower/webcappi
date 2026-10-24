@@ -107,9 +107,9 @@
   <section id="behavior">
     <h2>Capture behavior</h2>
     <ul>
-      <li>GET images may be cached according to server configuration. Conditional GET requests can return 304 using an ETag. POST always generates a new image and returns <code>Cache-Control: no-store</code>.</li>
+      <li>The server retains only ETag and freshness metadata, never PNG images. Conditional GET requests can return 304 without capture while metadata is fresh, or after source validation. Unconditional GET requests always generate a new image. POST always generates a new image and returns <code>Cache-Control: no-store</code>.</li>
       <li>Capture waits for the document load, configured readiness selectors, fonts, visible images and two animation frames. Broken visible images fail the capture. Use <code>ready_selector</code> for application-specific readiness; there is no network-idle check.</li>
-      <li><code>delay_ms</code> shares the overall capture deadline. It does not extend that deadline, run again on a cache hit, or recheck readiness after the delay.</li>
+      <li><code>delay_ms</code> shares the overall capture deadline. It does not extend that deadline or recheck readiness after the delay. A metadata-based 304 skips capture and its delay.</li>
       <li>For posted HTML, use absolute resource URLs or <code>&lt;base href="https://example.com/"&gt;</code> to resolve relative paths. A base URL does not give the document that site's origin or storage access. Browser origin and CORS rules still apply.</li>
       <li>In <code>loopback</code> mode, the body and uploaded <code>Content-Type</code> are preserved without encoding conversion or an added BOM. If the header omits charset, Chromium uses its normal encoding detection, including a BOM or <code>&lt;meta charset&gt;</code>. In <code>file</code> mode, charset must be omitted or UTF-8; other charset values return 415. The body must be valid UTF-8 and receives a UTF-8 BOM.</li>
     </ul>

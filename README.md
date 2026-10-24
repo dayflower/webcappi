@@ -3,7 +3,8 @@
 A Go REST server that captures a URL or posted HTML as a PNG with independent
 viewport and output sizes, using a fresh Chromium process and a disposable copy
 of a browser profile. The first release targets **Linux amd64 and arm64**, one
-replica and an in-process bounded PNG cache.
+replica and a bounded, process-local cache of validation metadata. PNG bytes are
+never cached by the server.
 Private addresses and cluster Service DNS names are intentionally supported.
 
 ## Browser selection and verified startup behavior
@@ -308,8 +309,8 @@ cp config.example.json config.json
 
 `check` validates configuration, bundle descriptors, browser version, scratch
 access and a real browser launch on each profile clone. The CLI capture command
-uses the same validation and rendering path as the HTTP server; its cache lasts
-only for that CLI process. `version` prints the supported browser version.
+uses the same validation and rendering path as the HTTP server and always
+generates a new PNG. `version` prints the supported browser version.
 
 ```sh
 curl --get http://localhost:8080/capture \
@@ -420,9 +421,9 @@ Send `Authorization: Bearer <token>` on each API request. Missing or invalid
 credentials return JSON with HTTP 401, `WWW-Authenticate: Bearer` and
 `Cache-Control: no-store`, before input validation, admission or cache access.
 Tokens in query parameters or cookies are not accepted. Authentication applies
-to cached PNGs and conditional requests as well as new captures. The API token
+to conditional requests as well as new captures. The API token
 is not forwarded to the captured site. All holders of the shared token can use
-all configured profiles and share the internal capture cache.
+all configured profiles and share the validation metadata cache.
 
 The example configuration enables authentication. Use TLS at your ingress or
 reverse proxy to protect Bearer tokens in transit; the application itself serves
@@ -452,8 +453,8 @@ padding. Scaling can enlarge or shrink the image, using bilinear filtering from
 bilinear interpolation when enlarging and a faster approximation when shrinking;
 `nearest_neighbor` selects the closest source pixel without blending colors.
 This setting applies to GET, HTML POST and
-the local capture CLI. It requires a process restart, which clears the internal
-cache; callers cannot override the algorithm per request.
+the local capture CLI. It requires a process restart, which clears the validation
+metadata; callers cannot override the algorithm per request.
 Browser device scale remains fixed at 1; resizing does not reflow the page or
 render at a higher device pixel ratio. With matching viewport/output sizes,
 the original screenshot is returned without re-encoding.
@@ -498,8 +499,8 @@ It accepts an integer from 0 to 300000 milliseconds and defaults to 0 (no extra
 wait). For example, `&delay_ms=1000` waits one additional second. Empty, negative,
 fractional, out-of-range or repeated values are rejected with 400. The delay
 shares the overall capture deadline and is interrupted by cancellation; it does
-not extend `capture_timeout_seconds`. Cache hits return the existing PNG without
-waiting again. Assets and readiness signals are not rechecked after the delay.
+not extend `capture_timeout_seconds`. A metadata-based 304 skips capture and
+its delay. Assets and readiness signals are not rechecked after the delay.
 
 GET and POST are accepted on `/capture`; repeated
 and unknown query parameters, credentials in URLs, unsupported schemes and excessive dimensions
@@ -528,8 +529,9 @@ share the overall deadline.
 ## Configuration
 
 JSON configuration rejects unknown top-level fields. All omitted limits take
-these defaults. Durations are whole seconds; zero TTL or zero cache capacity
-disables internal caching. Configuration changes require a process restart.
+these defaults. Durations are whole seconds. Zero `max_age_seconds` requires
+validation on every conditional request; zero metadata capacity disables metadata
+retention. Configuration changes require a process restart.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -539,18 +541,18 @@ disables internal caching. Configuration changes require a process restart.
 | `no_sandbox` | `false` | Explicit browser sandbox opt-out |
 | `work_dir` | `/work` | Writable scratch and automatic template; separate from supplied templates/extensions |
 | `concurrency` | 1 | Active browser captures (1–32) |
-| `queue_size` | 8 | Additional distinct pending captures (0–1024) |
-| `max_requests` | 64 | Concurrent HTTP capture handlers, including coalesced waiters |
+| `queue_size` | 8 | Additional pending captures or source validations (0–1024) |
+| `max_requests` | 64 | Concurrent HTTP capture handlers, including metadata lookups |
 | `capture_timeout_seconds` | 30 | Queue + profile copy + browser start + readiness + delay + PNG (1–300) |
-| `cache_ttl_seconds` | 60 | Fixed freshness lifetime from generation (0–86400) |
-| `cache_max_bytes` | 67108864 | LRU PNG byte capacity |
-| `cache_max_entries` | 128 | Additional cache metadata/entry bound |
+| `max_age_seconds` | 60 | Maximum downstream/metadata freshness lifetime (0–86400) |
+| `metadata_max_bytes` | 1048576 | Validation metadata byte budget (0–67108864) |
+| `metadata_max_entries` | 128 | Validation metadata LRU entry limit (0–10000) |
 | `max_width`, `max_height` | 4096 each | Maximum viewport and output dimensions, checked independently |
 | `max_pixels` | 8388608 | Maximum area of each viewport and output canvas |
 | `resize_algorithm` | `bilinear` | Resize filter: `bilinear`, `catmull_rom`, `approx_bilinear` or `nearest_neighbor`; center cropping is preserved |
 | `max_profile_bytes` | 536870912 | Maximum template bytes copied during initialization or per capture |
 | `max_post_bytes` | 1048576 | Maximum HTML POST body bytes (1–134217728) |
-| `max_png_bytes` | 41943040 | Maximum returned/cached PNG size |
+| `max_png_bytes` | 41943040 | Maximum generated PNG size |
 | `profiles` | omitted | Named immutable descriptors; absent `default` is generated (128 total including `default`) |
 
 `profiles.default` is optional. When absent, a temporary default is generated at
@@ -568,47 +570,80 @@ Chromium lock/endpoint files, which are excluded. Files in copies are independen
 and writable even when original files are read-only. No hard links, shared work
 profiles, template launches or writes back to the template are used.
 
-Each distinct job has its own deadline and directory. Identical GET callers
-share a job; every POST creates a separate job. Canceling one GET caller keeps
-the shared job alive for others; canceling its
-last caller terminates it. Successful browsers close normally, then descendants
+Each capture or source-validation job has its own deadline and directory.
+Unconditional GET and all POST requests create independent jobs; no PNG results
+are shared between requests. Canceling a request cancels its own job.
+Successful browsers close normally, then descendants
 are reaped/terminated before scratch is removed. Cleanup has a separate short
 grace period. SIGTERM stops admission/readiness, cancels active/queued captures,
 waits for their cleanup and shuts down HTTP. SIGKILL/node loss cannot run cleanup;
 the example's emptyDir is reclaimed with the pod.
 
-## Cache semantics
+## Conditional GET and freshness
 
-The GET cache key contains URL, viewport, output dimensions, the request's
-`ready_selector` and `delay_ms`, profile name, scale factor and renderer schema. Omitted output
-dimensions and explicit values equal to the viewport share a cache key.
-Profile settings and bundle contents are not part of the key.
-Changes under the same profile name can reuse existing
-entries until TTL expiry or a process restart discards the internal cache.
-Cache entries use an LRU bounded by PNG bytes and entry count; expired entries
-are removed lazily on requests. Errors are not cached. Oversized cache entries
-can still be returned, up to `max_png_bytes`.
+The server never retains PNG bytes. Unconditional GET requests always capture a
+new image, including concurrent requests for identical conditions. POST also
+always captures a new image and returns `Cache-Control: no-store`, without ETag
+or Age; it ignores `If-None-Match` and never uses validation metadata.
 
-GET responses use `Cache-Control: private, max-age=<TTL>, must-revalidate` and an
-`Age` rounded conservatively from the **original generation time**. A hit or 304
-does not reset that time. ETags are quoted SHA-256 hashes of the actual PNG bytes;
-GET supports `If-None-Match`, weak tags, lists and `*`. With TTL zero, GET responses
-use `private, no-cache` and every request revalidates by rendering.
+GET ETags are quoted SHA-256 hashes of the actual PNG bytes. The server retains
+only the PNG ETag, validation time, freshness policy and main document URL,
+ETag/Last-Modified and freshness headers. Metadata uses an LRU bounded by
+`metadata_max_bytes` and `metadata_max_entries`. Expired entries can retain source
+validators until eviction. Process restarts discard all metadata. Errors and
+responses marked `no-store` are not retained.
 
-POST always renders a new PNG, even when identical HTML requests arrive
-concurrently. It bypasses the internal cache and request coalescing, while
-sharing the same browser concurrency, queue capacity, deadline and cleanup
-rules. POST responses use `Cache-Control: no-store`, omit ETag/Age, and ignore
-`If-None-Match`.
+The metadata key contains URL (including fragments), viewport, output dimensions,
+the request's `ready_selector` and `delay_ms`, profile name, scale factor and
+renderer schema. Omitted output dimensions and explicit viewport-sized values
+share a key. Profile settings and bundle contents are fixed for the process and
+are not part of the key.
 
-An expired/missing image is rendered **before** testing `If-None-Match`; the old
-PNG's tag alone never produces 304 after expiry. If a new render produces the
-same bytes, 304 is legitimate. Source HTML validators/Cache-Control are not
-consulted, so changes may be invisible during the configured TTL. Shared proxies
-do not cache these private responses by default. Internal reuse applies across
-all authorized callers: use separate profiles/processes where caller-specific
-authentication/state must be isolated. No disk cache, persistence, cross-replica
-singleflight, distributed cache or HTTP cache-bypass directive is implemented.
+Conditional GET supports weak tags, lists and `*`:
+
+1. Matching fresh metadata returns 304 without accessing the source or starting a
+   browser. Its validation time is not renewed by this shortcut.
+2. Matching expired metadata with a source ETag or Last-Modified starts the same
+   disposable browser/profile used for capture and sends a conditional request
+   to the previously captured main document URL. A source 304 renews metadata
+   and returns 304 without readiness waits, subresource loading or PNG generation.
+   Changed sources continue through normal capture. Validators are not sent to
+   unrelated redirects, child frames or subresources.
+3. Missing metadata, a mismatching client tag, or an expired entry without source
+   validators triggers a new capture. If the new PNG still matches the client's
+   tag, the response is 304; otherwise it is 200 with the PNG.
+
+The default freshness lifetime is 60 seconds. A source `Cache-Control: max-age`
+limits this to the source's remaining lifetime, conservatively accounting for
+Age, Date and time spent navigating, capturing and closing the browser. Invalid
+or repeated source max-age values require validation. Source `no-cache` requires
+validation on each request; `no-store` prevents metadata retention and is
+propagated downstream. A source 304 merges its updated policy/validators with
+previous metadata and resets Date/Age accounting for the new validation.
+`max_age_seconds: 0` also requires validation on every conditional request.
+
+GET responses use `Cache-Control: private, max-age=<lifetime>, must-revalidate`,
+or `private, no-cache` when immediately stale. Age reflects elapsed time since
+the image was generated or the source was last validated, rounded upward on
+metadata reuse. It does not restart on a fresh-metadata 304. With no-store,
+responses use `private, no-store` and omit Age.
+
+This intentionally treats the main HTML document's validation as evidence that
+the capture is unchanged. CSS, images, scripts, time-dependent rendering and
+extension state can change independently; those changes are not checked on a
+metadata/source-based 304. Without source validators, the configured lifetime
+is an explicit window in which changes are assumed absent. Chromium's HTTP
+cache is disabled during capture/navigation so prepared profile disk cache does
+not mask source updates. Service workers retain their normal profile behavior.
+
+Metadata is shared by authorized callers within the process. Responses remain
+private by default; deployments that need image caching can configure an
+appropriately isolated reverse proxy. No image cache, capture coalescing,
+distributed state or client cache-bypass directive is implemented.
+
+Configuration migration: replace `cache_ttl_seconds` with `max_age_seconds`,
+remove `cache_max_bytes` and `cache_max_entries`, and optionally set the new
+metadata limits. The old fields are rejected as unknown configuration keys.
 
 ## Docker and Kubernetes
 
@@ -746,7 +781,7 @@ adjust defaults for larger profiles. API and bundle images can be updated
 independently. Prepare and qualify each bundle with the browser shipped in the
 target API image. For more profiles, add artifact directories, initContainer
 copies and descriptors. The example uses Recreate to avoid overlapping
-single-replica caches on updates.
+replicas on updates.
 
 This is an internal capture service with intentional access to private/cluster
 addresses. Optional shared Bearer authentication controls API access; it does
@@ -755,7 +790,7 @@ using your network policy and use an authentication gateway when more granular
 access control is needed. A captured page's requests, redirects and extensions
 inherit the browser pod's network reachability and prepared profile credentials.
 Disk, memory, CPU and target-page behavior still require container resource
-limits; PNG/cache limits do not bound all memory consumed by Chromium.
+limits; PNG/metadata limits do not bound all memory consumed by Chromium.
 
 ## Update a browser/extension/profile bundle
 
@@ -772,9 +807,9 @@ limits; PNG/cache limits do not bound all memory consumed by Chromium.
    state as the new template.
 
 Browser patch updates should be explicit, regular releases. The fixed browser
-does not auto-update at runtime. Restarts discard the internal cache. Independent
-replicas have independent caches and browser concurrency limits; this release
-does not coordinate them.
+does not auto-update at runtime. Restarts discard the metadata cache. Independent
+replicas have independent validation metadata and browser concurrency limits;
+this release does not coordinate them.
 
 ## Verification and known limits
 
@@ -841,6 +876,16 @@ inspection confirmed their architectures. The multi-platform image build
 failed at ARM64 execution with `exec format error`; ARM64 runtime behavior was
 not verified.
 
+The metadata-only conditional GET update passed Go 1.26.10 race tests and vet,
+the amd64 image build, real-browser tests and REST container smoke tests. Tests
+verify fresh-metadata 304s without a browser, source ETag/Last-Modified validation
+without PNG generation, validator-free expiry with recapture, independent
+unconditional captures and metadata limits. Both CLI architectures built and
+passed ELF architecture inspection. The multi-platform image build still fails
+at ARM64 execution with `exec format error`; ARM64 runtime remains unverified.
+Browser-test startup waits and failure cleanup were hardened for loaded hosts;
+production capture deadlines and sandbox defaults were preserved.
+
 Implemented tests cover exact PNG dimensions, Japanese rendering, both HTML
 source modes and their secure-context status, a pixel-level
 extension marker, real headed unpacked installation, two independent headless
@@ -851,16 +896,18 @@ The fixture deliberately opens extra tabs on normal page messages as well as
 initial installation, so target selection is exercised.
 
 Unit/integration tests cover input and bundle validation, LRU byte/entry limits,
-cache expiry and content tags, coalescing, bounded admission/queueing, cancellation
-with multiple waiters, deadlines, shutdown, HTTP errors and health/readiness.
+metadata freshness and content tags, source revalidation, bounded
+admission/queueing, independent cancellation, deadlines, shutdown, HTTP errors
+and health/readiness.
 `go test -race ./...` and `go vet ./...` are the standard checks.
 
 `scripts/container-smoke.py` runs the actual REST image with a read-only root,
 read-only template/extension mounts, writable tmpfs and a local page in another
-container addressed through private Docker DNS. It checks PNG output, concurrent
-coalescing and cache hits without another capture, Bearer authentication including
-cached/conditional responses and unauthenticated probes, TTL expiry after page changes,
-conditional responses, input/timeout/load errors, scratch cleanup, template
+container addressed through private Docker DNS. It checks PNG output,
+metadata-based conditional responses without another capture, independent
+unconditional captures, Bearer authentication including conditional responses
+and unauthenticated probes, expiry and source validation after page changes,
+validator-free fallback, input/timeout/load errors, scratch cleanup, template
 integrity and normal SIGTERM exit. HTML POST tests check the default file mode,
 explicit file/loopback selection, size limits, and generation on every request.
 It does not contact an external page.

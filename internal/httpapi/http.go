@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -32,10 +31,13 @@ type API struct {
 	requests chan struct{}
 	draining atomic.Bool
 	check    func(context.Context) error
+	metadata *metadataCache
+	next     atomic.Uint64
+	now      func() time.Time
 }
 
 func New(c config.Config, s Getter, check func(context.Context) error) *API {
-	return &API{cfg: c, service: s, requests: make(chan struct{}, c.MaxRequests), check: check}
+	return &API{cfg: c, service: s, requests: make(chan struct{}, c.MaxRequests), check: check, metadata: newMetadataCache(c.MetadataMaxEntries, c.MetadataMaxBytes), now: time.Now}
 }
 func (a *API) Drain() { a.draining.Store(true) }
 
@@ -135,6 +137,20 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 		req.HTML = string(body)
 		req.HTMLContentType = contentType
 	}
+	var previous *metadata
+	order := a.next.Add(1)
+	key := service.Key(req)
+	if r.Method == http.MethodGet {
+		previous = a.metadata.get(key)
+		if previous != nil && matchesETag(r.Header.Values("If-None-Match"), previous.etag) {
+			if a.now().Before(previous.expires()) {
+				writeValidationHeaders(w, previous, a.now())
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			req.Revalidate = previous.source
+		}
+	}
 	img, err := a.service.Get(r.Context(), req)
 	if err != nil {
 		switch {
@@ -152,24 +168,26 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		w.Header().Set("ETag", img.ETag)
-		// Reusing an image never resets its freshness. Rounding age upward avoids
-		// granting a partial extra second of freshness on each cache hit.
-		if a.cfg.CacheTTLSeconds > 0 {
-			w.Header().Set("Cache-Control", fmt.Sprintf("private, max-age=%d, must-revalidate", a.cfg.CacheTTLSeconds))
-			age := int(math.Ceil(time.Since(img.Created).Seconds()))
-			if age < 0 {
-				age = 0
+		now := a.now()
+		source := img.Source
+		if img.NotModified {
+			if previous == nil {
+				fail(w, 502, "unexpected source validation response")
+				return
 			}
-			w.Header().Set("Age", strconv.Itoa(age))
-		} else {
-			w.Header().Set("Cache-Control", "private, no-cache")
+			img.ETag = previous.etag
+			source = mergeSource(previous.source, img.Source)
 		}
+		policy := cachePolicy(a.cfg.MaxAgeSeconds, source, now)
+		entry := &metadata{key: key, etag: img.ETag, source: source, validated: now, policy: policy, order: order}
+		a.metadata.put(entry)
+		writeValidationHeaders(w, entry, now)
 		if matchesETag(r.Header.Values("If-None-Match"), img.ETag) {
-			w.WriteHeader(304)
+			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 	}
+
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Length", strconv.Itoa(len(img.PNG)))
 	w.WriteHeader(200)

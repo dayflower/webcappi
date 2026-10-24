@@ -1,7 +1,6 @@
 package service
 
 import (
-	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/dayflower/webcappi/internal/capture"
 	"github.com/dayflower/webcappi/internal/config"
@@ -18,49 +16,35 @@ import (
 var ErrBusy = errors.New("capture capacity exhausted")
 var ErrClosed = errors.New("service is shutting down")
 
-type RenderFunc func(context.Context, capture.Request) ([]byte, error)
+type RenderFunc func(context.Context, capture.Request) (capture.Result, error)
+
 type Image struct {
-	PNG     []byte
-	ETag    string
-	Created time.Time
-	Expires time.Time
+	PNG         []byte
+	ETag        string
+	Source      *capture.SourceResponse
+	NotModified bool
 }
-type cached struct {
-	key   string
-	image *Image
-}
-type flight struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	done      chan struct{}
-	waiters   int
-	image     *Image
-	err       error
-	cacheable bool
-}
+
+// Service bounds independent captures. It retains no completed images.
 type Service struct {
-	cfg     config.Config
-	render  RenderFunc
-	ctx     context.Context
-	cancel  context.CancelFunc
-	slots   chan struct{}
-	mu      sync.Mutex
-	closed  bool
-	nextJob uint64
-	flights map[string]*flight
-	cache   map[string]*list.Element
-	lru     *list.List
-	bytes   int64
-	wg      sync.WaitGroup
+	cfg    config.Config
+	render RenderFunc
+	ctx    context.Context
+	cancel context.CancelFunc
+	slots  chan struct{}
+	mu     sync.Mutex
+	closed bool
+	active int
+	wg     sync.WaitGroup
 }
 
 func New(parent context.Context, cfg config.Config, render RenderFunc) *Service {
 	ctx, cancel := context.WithCancel(parent)
-	return &Service{cfg: cfg, render: render, ctx: ctx, cancel: cancel, slots: make(chan struct{}, cfg.Concurrency), flights: map[string]*flight{}, cache: map[string]*list.Element{}, lru: list.New()}
+	return &Service{cfg: cfg, render: render, ctx: ctx, cancel: cancel, slots: make(chan struct{}, cfg.Concurrency)}
 }
 
 func Key(req capture.Request) string {
-	// URL captures identify a profile by name for caching and coalescing.
+	// Capture conditions identify metadata; no PNG bytes are retained.
 	outputWidth, outputHeight := req.OutputSize()
 	b, _ := json.Marshal(struct {
 		Schema        string
@@ -91,122 +75,61 @@ func (s *Service) Get(ctx context.Context, req capture.Request) (*Image, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	cacheable := req.HTML == ""
-	var key string
-	if cacheable {
-		key = Key(req)
-	}
 	s.mu.Lock()
 	if s.closed || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return nil, ErrClosed
 	}
-	if !cacheable {
-		// HTML requests always create independent jobs, even for identical bodies.
-		s.nextJob++
-		key = fmt.Sprintf("html-%d", s.nextJob)
-	}
-	s.expire(time.Now())
-	if e := s.cache[key]; e != nil {
-		s.lru.MoveToFront(e)
-		img := e.Value.(cached).image
-		s.mu.Unlock()
-		return img, nil
-	}
-	f := s.flights[key]
-	if f == nil {
-		if len(s.flights) >= s.cfg.Concurrency+s.cfg.QueueSize {
-			s.mu.Unlock()
-			return nil, ErrBusy
-		}
-		job, cancel := context.WithTimeout(s.ctx, s.cfg.Timeout())
-		f = &flight{ctx: job, cancel: cancel, done: make(chan struct{}), cacheable: cacheable}
-		s.flights[key] = f
-		s.wg.Add(1)
-		go s.run(key, f, req)
-	} else if f.ctx.Err() != nil {
+	if s.active >= s.cfg.Concurrency+s.cfg.QueueSize {
 		s.mu.Unlock()
 		return nil, ErrBusy
 	}
-	f.waiters++
+	s.active++
+	s.wg.Add(1)
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		f.waiters--
-		if f.waiters == 0 {
-			f.cancel()
-		}
+		s.active--
 		s.mu.Unlock()
+		s.wg.Done()
 	}()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-f.done:
-		return f.image, f.err
-	}
-}
 
-func (s *Service) run(key string, f *flight, req capture.Request) {
-	defer s.wg.Done()
-	defer f.cancel()
+	// Queueing and rendering share the request deadline and service shutdown.
+	job, cancel := context.WithTimeout(ctx, s.cfg.Timeout())
+	stop := context.AfterFunc(s.ctx, cancel)
+	defer stop()
+	defer cancel()
 	select {
 	case s.slots <- struct{}{}:
-	case <-f.ctx.Done():
-		s.finish(key, f, nil, f.ctx.Err())
-		return
+		defer func() { <-s.slots }()
+	case <-job.Done():
+		return nil, job.Err()
 	}
-	png, err := s.render(f.ctx, req)
-	<-s.slots
-	// Cancellation wins even when a renderer returns late with an image.
-	if f.ctx.Err() != nil {
-		err = f.ctx.Err()
+	if err := job.Err(); err != nil {
+		return nil, err
 	}
-	var image *Image
-	if err == nil {
-		if int64(len(png)) > s.cfg.MaxPNGBytes {
-			err = fmt.Errorf("generated PNG exceeds size limit")
-		} else {
-			h := sha256.Sum256(png)
-			now := time.Now()
-			image = &Image{PNG: png, ETag: `"` + hex.EncodeToString(h[:]) + `"`, Created: now, Expires: now.Add(s.cfg.TTL())}
-		}
+	result, err := s.render(job, req)
+	// Wait for renderer cleanup before releasing capacity, even on cancellation.
+	if job.Err() != nil {
+		return nil, job.Err()
 	}
-	s.finish(key, f, image, err)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(result.PNG)) > s.cfg.MaxPNGBytes {
+		return nil, fmt.Errorf("generated PNG exceeds size limit")
+	}
+	if result.NotModified {
+		return &Image{Source: result.Source, NotModified: true}, nil
+	}
+	h := sha256.Sum256(result.PNG)
+	return &Image{PNG: result.PNG, ETag: `"` + hex.EncodeToString(h[:]) + `"`, Source: result.Source}, nil
 }
 
-func (s *Service) finish(key string, f *flight, image *Image, err error) {
+func (s *Service) Close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.flights, key)
-	f.image = image
-	f.err = err
-	if err == nil && f.cacheable && !s.closed && f.ctx.Err() == nil && s.cfg.CacheTTLSeconds > 0 && s.cfg.CacheMaxEntries > 0 && int64(len(image.PNG)) <= s.cfg.CacheMaxBytes {
-		s.expire(time.Now())
-		for s.lru.Len() >= s.cfg.CacheMaxEntries || s.bytes+int64(len(image.PNG)) > s.cfg.CacheMaxBytes {
-			s.remove(s.lru.Back())
-		}
-		e := s.lru.PushFront(cached{key, image})
-		s.cache[key] = e
-		s.bytes += int64(len(image.PNG))
-	}
-	close(f.done)
+	s.closed = true
+	s.cancel()
+	s.mu.Unlock()
+	s.wg.Wait()
 }
-func (s *Service) remove(e *list.Element) {
-	if e == nil {
-		return
-	}
-	v := e.Value.(cached)
-	delete(s.cache, v.key)
-	s.bytes -= int64(len(v.image.PNG))
-	s.lru.Remove(e)
-}
-func (s *Service) expire(now time.Time) {
-	for e := s.lru.Back(); e != nil; {
-		previous := e.Prev()
-		if !now.Before(e.Value.(cached).image.Expires) {
-			s.remove(e)
-		}
-		e = previous
-	}
-}
-func (s *Service) Close() { s.mu.Lock(); s.closed = true; s.cancel(); s.mu.Unlock(); s.wg.Wait() }

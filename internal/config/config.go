@@ -30,9 +30,9 @@ type Config struct {
 	QueueSize             int                        `json:"queue_size"`
 	MaxRequests           int                        `json:"max_requests"`
 	CaptureTimeoutSeconds int                        `json:"capture_timeout_seconds"`
-	CacheTTLSeconds       int                        `json:"cache_ttl_seconds"`
-	CacheMaxBytes         int64                      `json:"cache_max_bytes"`
-	CacheMaxEntries       int                        `json:"cache_max_entries"`
+	MetadataMaxBytes      int64                      `json:"metadata_max_bytes"`
+	MetadataMaxEntries    int                        `json:"metadata_max_entries"`
+	MaxAgeSeconds         int                        `json:"max_age_seconds"`
 	MaxWidth              int                        `json:"max_width"`
 	MaxHeight             int                        `json:"max_height"`
 	MaxPixels             int64                      `json:"max_pixels"`
@@ -48,7 +48,7 @@ type Auth struct {
 }
 
 func Defaults() Config {
-	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, CacheTTLSeconds: 60, CacheMaxBytes: 64 << 20, CacheMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, ResizeAlgorithm: capture.ResizeBilinear, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
+	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, MaxAgeSeconds: 60, MetadataMaxBytes: 1 << 20, MetadataMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, ResizeAlgorithm: capture.ResizeBilinear, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
 }
 
 func Load(path string) (Config, error) {
@@ -75,7 +75,6 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Timeout() time.Duration { return time.Duration(c.CaptureTimeoutSeconds) * time.Second }
-func (c Config) TTL() time.Duration     { return time.Duration(c.CacheTTLSeconds) * time.Second }
 
 func (c Config) Validate() error {
 	if err := c.ResizeAlgorithm.Validate(); err != nil {
@@ -90,11 +89,14 @@ func (c Config) Validate() error {
 	if c.Concurrency < 1 || c.Concurrency > 32 || c.QueueSize < 0 || c.QueueSize > 1024 || c.MaxRequests < 1 || c.MaxRequests > 4096 {
 		return errors.New("invalid concurrency, queue_size or max_requests")
 	}
-	if c.CaptureTimeoutSeconds < 1 || c.CaptureTimeoutSeconds > 300 || c.CacheTTLSeconds < 0 || c.CacheTTLSeconds > 86400 {
-		return errors.New("invalid capture timeout or cache TTL")
+	if c.CaptureTimeoutSeconds < 1 || c.CaptureTimeoutSeconds > 300 || c.MaxAgeSeconds < 0 || c.MaxAgeSeconds > 86400 {
+		return errors.New("invalid capture timeout or max age")
 	}
-	if c.CacheMaxBytes < 0 || c.CacheMaxBytes > 4<<30 || c.CacheMaxEntries < 0 || c.CacheMaxEntries > 10000 || c.MaxPNGBytes < 1024 || c.MaxPNGBytes > 128<<20 || c.MaxProfileBytes < 1 || c.MaxProfileBytes > 8<<30 {
-		return errors.New("invalid byte or entry limit")
+	if c.MetadataMaxBytes < 0 || c.MetadataMaxBytes > 64<<20 || c.MetadataMaxEntries < 0 || c.MetadataMaxEntries > 10000 {
+		return errors.New("invalid metadata cache limit")
+	}
+	if c.MaxPNGBytes < 1024 || c.MaxPNGBytes > 128<<20 || c.MaxProfileBytes < 1 || c.MaxProfileBytes > 8<<30 {
+		return errors.New("invalid byte limit")
 	}
 	if c.MaxPOSTBytes < 1 || c.MaxPOSTBytes > 128<<20 {
 		return errors.New("max_post_bytes must be between 1 and 134217728")

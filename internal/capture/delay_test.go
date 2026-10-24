@@ -71,13 +71,19 @@ window.requestAnimationFrame = callback => raf(timestamp => {
 	}
 	for _, reason := range []string{"cancellation", "deadline"} {
 		t.Run(reason, func(t *testing.T) {
-			req.DelayMS = 10000
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-			defer cancel()
+			req.DelayMS = 30000
+			// Browser startup must fit independently of the delay under test.
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			done := make(chan error, 1)
+			finished := make(chan struct{})
 			go func() {
+				defer close(finished)
 				_, err := renderer.Capture(ctx, req)
 				done <- err
+			}()
+			defer func() {
+				cancel()
+				<-finished
 			}()
 			select {
 			case <-frames:
@@ -86,14 +92,16 @@ window.requestAnimationFrame = callback => raf(timestamp => {
 			}
 			start := time.Now()
 			want := context.DeadlineExceeded
+			maxWait := 15 * time.Second
 			if reason == "cancellation" {
 				cancel()
 				want = context.Canceled
+				maxWait = 5 * time.Second
 			}
 			if err := <-done; !errors.Is(err, want) {
 				t.Fatalf("delay did not return %v: %v", want, err)
 			}
-			if time.Since(start) > 5*time.Second {
+			if time.Since(start) > maxWait {
 				t.Fatal("capture waited for the entire delay")
 			}
 		})

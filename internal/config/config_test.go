@@ -81,6 +81,38 @@ func TestConfigDecodeAndDefaults(t *testing.T) {
 	}
 }
 
+func TestMetadataConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"max_age_seconds":0,"metadata_max_bytes":0,"metadata_max_entries":0}`, true},
+		{`{"max_age_seconds":86400,"metadata_max_bytes":67108864,"metadata_max_entries":10000}`, true},
+		{`{"max_age_seconds":-1}`, false},
+		{`{"max_age_seconds":86401}`, false},
+		{`{"metadata_max_bytes":-1}`, false},
+		{`{"metadata_max_bytes":67108865}`, false},
+		{`{"metadata_max_entries":-1}`, false},
+		{`{"metadata_max_entries":10001}`, false},
+		{`{"cache_ttl_seconds":60}`, false},
+		{`{"cache_max_bytes":67108864}`, false},
+		{`{"cache_max_entries":128}`, false},
+	} {
+		if err := os.WriteFile(path, []byte(tc.input), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); (err == nil) != tc.valid {
+			t.Fatalf("%s: %v", tc.input, err)
+		}
+	}
+	defaults := Defaults()
+	if defaults.MaxAgeSeconds != 60 || defaults.MetadataMaxBytes != 1<<20 || defaults.MetadataMaxEntries != 128 {
+		t.Fatal("unexpected metadata defaults", defaults)
+	}
+}
+
 func TestResizeAlgorithmConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	for _, tc := range []struct {
