@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -25,13 +26,16 @@ func main() {
 		os.Exit(1)
 	}
 }
-func run(args []string) error {
+func run(args []string) (err error) {
 	if len(args) == 0 {
-		return errors.New("usage: webcappi serve|capture|check|version [flags]")
+		return errors.New("usage: webcappi serve|capture|check|init-profile|version [flags]")
 	}
 	if args[0] == "version" {
 		fmt.Println("webcappi; Chrome for Testing " + capture.BrowserVersion)
 		return nil
+	}
+	if args[0] == "init-profile" {
+		return runInitProfile(args[1:])
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	path := fs.String("config", "config.json", "server configuration")
@@ -61,12 +65,39 @@ func run(args []string) error {
 	if err = os.MkdirAll(c.WorkDir, 0700); err != nil {
 		return err
 	}
-	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
+	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	// Keep validation of configured bundles separate from the generated template.
+	checkFiles := c.CheckFiles
 	err = b.Check(startup)
 	if err == nil {
-		err = c.CheckFiles(startup)
+		err = checkFiles(startup)
 	}
 	renderer := capture.Renderer{Browser: b, WorkDir: c.WorkDir, MaxProfileBytes: c.MaxProfileBytes}
+	if _, provided := c.Profiles[config.DefaultProfileName]; err == nil && !provided {
+		var temporary *capture.TemporaryProfile
+		temporary, err = renderer.NewProfile(startup)
+		if err == nil {
+			defer func() {
+				if e := temporary.Close(); err == nil {
+					err = e
+				}
+			}()
+			providedFiles := checkFiles
+			checkFiles = func(ctx context.Context) error {
+				if err := providedFiles(ctx); err != nil {
+					return err
+				}
+				return temporary.CheckFiles(ctx)
+			}
+			c.Profiles = maps.Clone(c.Profiles)
+			if c.Profiles == nil {
+				c.Profiles = make(map[string]capture.Profile)
+			}
+			c.Profiles[config.DefaultProfileName] = temporary.Profile
+			slog.Info("temporary default profile created", "user_data_dir", temporary.Profile.UserDataDir)
+		}
+	}
 	if err == nil {
 		for _, p := range c.Profiles {
 			if err = renderer.Check(startup, p); err != nil {
@@ -84,7 +115,7 @@ func run(args []string) error {
 	}
 	s := service.New(ctx, c, renderer.Capture)
 	defer s.Close()
-	api := httpapi.New(c, s, c.CheckFiles)
+	api := httpapi.New(c, s, checkFiles)
 	if args[0] == "capture" {
 		// Reuse HTTP input validation so CLI and REST accept the same requests.
 		req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/capture", nil)

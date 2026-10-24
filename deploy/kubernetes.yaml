@@ -11,15 +11,7 @@ data:
       },
       "browser_path": "/opt/chrome/chrome",
       "no_sandbox": false,
-      "work_dir": "/work/captures",
-      "profiles": {
-        "default": {
-          "user_data_dir": "/bundles/default/user-data",
-          "profile_directory": "Default",
-          "extensions": ["/bundles/default/extensions/verification"],
-          "ready_selectors": ["#webcappi-extension-ready"]
-        }
-      }
+      "work_dir": "/work/captures"
     }
 ---
 apiVersion: apps/v1
@@ -42,19 +34,6 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
-      initContainers:
-        - name: install-bundle
-          image: webcappi-profiles:default-20261023-1
-          command: ["sh", "-c", "cp -R /bundle/default /out/default"]
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: ["ALL"]}
-          resources:
-            requests: {cpu: 100m, memory: 64Mi}
-            limits: {cpu: "1", memory: 256Mi}
-          volumeMounts:
-            - {name: bundles, mountPath: /out}
       containers:
         - name: api
           image: webcappi:dev
@@ -81,7 +60,6 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /etc/webcappi, readOnly: true}
             - {name: api-token, mountPath: /run/secrets/webcappi, readOnly: true}
-            - {name: bundles, mountPath: /bundles, readOnly: true}
             - {name: work, mountPath: /work}
             - {name: tmp, mountPath: /tmp}
             - {name: shm, mountPath: /dev/shm}
@@ -94,8 +72,6 @@ spec:
             defaultMode: 0440
             items:
               - {key: token, path: token}
-        - name: bundles
-          emptyDir: {sizeLimit: 1Gi}
         - name: work
           emptyDir: {sizeLimit: 2Gi}
         - name: tmp

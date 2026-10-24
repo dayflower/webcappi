@@ -23,8 +23,8 @@
     "default": {
       "user_data_dir": "/bundles/default/user-data",
       "profile_directory": "Default",
-      "extensions": ["/bundles/default/extensions/verification"],
-      "ready_selectors": ["#webcappi-extension-ready"]
+      "extensions": ["/bundles/default/extensions/my-extension"],
+      "ready_selectors": ["#my-extension-ready"]
     }
   }
 }

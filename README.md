@@ -1,7 +1,7 @@
 # webcappi
 
 A Go REST server that captures a URL or posted HTML as a viewport-sized PNG using
-a fresh Chromium process and a disposable copy of a prepared browser profile. The first
+a fresh Chromium process and a disposable copy of a browser profile. The first
 release targets **Linux amd64 and arm64**, one replica and an in-process bounded
 PNG cache.
 Private addresses and cluster Service DNS names are intentionally supported.
@@ -144,65 +144,124 @@ the viewport, and inspects actual rendered font families through CDP.
 The PNG artifacts are available for visual inspection; glyph shapes are not
 compared against reference images.
 
-## Prepare and import a production profile
+## Start without a prepared profile
 
-The **User Data Directory** is the parent of individual profiles. Copy all of it,
-including `Local State`, `Default/Preferences`, extension storage and databases.
-Passing `Default/` itself as `user_data_dir` is incorrect. See Chromium's
-[directory documentation](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md).
+Omit `profiles` (or use an empty object) to start without preparing any browser
+data. For example, this configuration uses all application defaults:
 
-Keep extension code and browser data separate:
-
-```text
-bundles/default/
-  bundle.json
-  extensions/verification/manifest.json
-  extensions/verification/...
-  user-data/Local State
-  user-data/Default/Preferences
-  user-data/Default/Local Extension Settings/...
+```json
+{}
 ```
 
-`bundle.json` is the profile descriptor shown in `config.example.json`. The
-server checks that it exactly matches the configured descriptor, including the
-User Data Directory, individual profile, extension paths and readiness signals.
-Do not edit a mounted bundle in place. Treat it as immutable.
+At startup, if `profiles.default` is absent, webcappi initializes the pinned
+Chromium in headless mode, closes it normally, and retains a complete,
+extension-free default template under `work_dir`. This also happens when other
+named profiles are configured. If `profiles.default` is configured, it is used
+instead; invalid or unreadable configured profiles fail startup.
 
-On a **Linux X11 desktop**, launch the exact production image and browser:
+Initialization and profile validation share a 30-second startup deadline and
+finish before the API listens. Every capture uses a separate clone of the
+template. Normal exit removes the generated template after captures finish;
+it is never reused by a later process. In Kubernetes, the example's `emptyDir`
+also removes any remaining data when the Pod is deleted. No profile artifact or
+persistent volume is needed for this mode.
+
+## Optional: prepare and import a production profile
+
+Create a clean default profile with the application image. No existing Chrome
+profile, configuration file, extension, display server or `xauth` is needed:
 
 ```sh
 make image
-bash scripts/prepare-profile.sh bundles/default
+docker run --rm --shm-size=512m webcappi:dev webcappi init-profile > default-profile.tar
+mkdir -p bundles
+tar -xf default-profile.tar -C bundles
 ```
 
-For another architecture, select its built image explicitly, for example
-`PLATFORM=linux/arm64 WEBCAPPI_IMAGE=webcappi:dev-arm64 bash scripts/prepare-profile.sh bundles/arm64/default`.
-Prepare and qualify profiles with the production architecture as well as the
-same browser version, OS image and extension paths. Do not assume an amd64
-template is qualified for arm64. Keep architecture-specific bundles in separate
-staging directories. A multi-platform bundle image must package the matching
-prepared data for each architecture; rebuilding one template twice does not
-establish profile portability.
+The command starts the pinned full Chrome for Testing in headless mode on
+`about:blank`, closes it normally to flush browser data, and exports the complete
+User Data Directory. It does not navigate to a website or install an extension.
+It keeps the browser sandbox enabled, uses a 30-second deadline and the default
+512 MiB profile byte limit, and removes temporary browser data on completion or
+failure. The container host must support the browser sandbox described below.
+A failed command must not be followed by importing its output archive.
 
-The helper imports a scoped X11 cookie with mode 0600 and runs Chromium as UID/GID
-10001. It does not change `xhost` access control. It opens `chrome://extensions`
-without headless mode, using an isolated User Data Directory. In that browser:
+Standard output contains only the tar archive; errors go to standard error.
+Native Linux users can specify `-browser-path` and `-work-dir` if needed.
+`-out profile.tar` writes to a container/local path instead of stdout and refuses
+to overwrite an existing file. This subcommand does not load server configuration.
 
-1. Enable Developer mode and choose **Load unpacked**.
-2. Select `/bundles/default/extensions/verification` for the sample extension.
-3. For real extensions, configure their permissions/settings, finish onboarding
-   and logins if needed, and verify operation on representative target pages.
-   To use an extension on posted HTML, enable **Allow access to file URLs** in
-   its Details page and ensure its content-script matches include `file:` URLs.
-4. Close welcome/setup tabs. Use the browser's **Exit** command so databases flush.
-5. The helper exports the normally closed User Data Directory and `bundle.json`.
+The archive contains:
 
-The helper defaults to the verification extension. Adapt its extension source,
-fixed container mount path and descriptor together for other extensions. Multiple
-extension directories are supported in `extensions`. The server verifies each
-extension's manifest public key, saved unpacked registration, enabled state and
-exact absolute path. Startup opens a browser on a clone and checks the extensions
-actually enabled by Chromium, before the API starts listening.
+```text
+bundles/default/          # after extracting into bundles/
+  bundle.json
+  extensions/            # empty; optional extensions can be added later
+  user-data/Local State
+  user-data/Default/Preferences
+  user-data/...
+```
+
+The Kubernetes example generates its default automatically; a prepared bundle
+is optional.
+`config.example.json` shows the full configuration, including example extension
+paths and readiness selectors. For a newly initialized bundle, set
+`profiles.default.extensions` to `[]` and omit `ready_selectors`, matching its
+generated `bundle.json`. Configure authentication as needed. Import the extracted directory through the
+read-only `/bundles` mount, or build the profile artifact image as shown below.
+Archive entries use private permissions and UID/GID 10001; host extraction may
+assign the invoking user's ownership. The runtime must have read/traverse access
+as described in the container instructions. Do not make credential-bearing
+profiles world-readable.
+
+The **User Data Directory** is the parent of individual profiles. Initialization
+creates it for you, including `Local State` and `Default/`. Keep all of it when
+importing or moving a bundle; passing `Default/` itself as `user_data_dir` is
+incorrect. See Chromium's
+[directory documentation](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/user_data_dir.md).
+The server checks that `bundle.json` exactly matches the configured descriptor.
+Each capture runs on a disposable clone and never changes the template.
+
+Generate and qualify each bundle with the production architecture and the same
+application image. For example, use `docker run --platform linux/arm64 ...` with
+an ARM64 image to initialize an ARM64 bundle. Keep architecture-specific bundles
+in separate staging directories. An amd64 template is not automatically qualified
+for arm64; preparing one template twice does not establish profile portability.
+
+### Optional: add extensions, settings or logins
+
+The basic initialization above does not require a GUI. To customize a profile,
+work on an offline bundle copy and open it with the same image's visible browser.
+A Linux X11 desktop with `xauth`, Docker and Python 3 is needed only for this
+optional editing workflow:
+
+1. Put your own unpacked extension directories under
+   `bundles/default/extensions/<name>/`, each with its `manifest.json`. Keep
+   extension code separate from `user-data/`. No verification extension is added.
+2. Run `bash scripts/edit-profile.sh bundles/default bundles/default-edited`.
+   Set `WEBCAPPI_IMAGE` and `PLATFORM` to select another qualified image/platform.
+   The helper copies browser data and extension code into the container and
+   leaves its source bundle unchanged. It refuses an existing output directory.
+3. In Chrome, enable Developer mode and **Load unpacked** from
+   `/bundles/default/extensions/<name>` for each extension you provided.
+   Configure permissions, finish onboarding/logins and verify representative
+   target pages. For posted HTML in file mode, enable **Allow access to file
+   URLs** and use content-script matches that include `file:` URLs.
+4. Use Chrome's **Exit** command so its databases flush. The helper saves the
+   edited browser data and generates `bundle.json` with the provided extension
+   paths. It does not guess readiness selectors; add those only when your
+   extension or page provides a readiness signal.
+5. Use the edited bundle as `/bundles/default` in a new deployment and update
+   `profiles.default` to match its `bundle.json`. Run `webcappi check` and qualify
+   captures before promoting it. The staging directory's name does not change
+   the extension's fixed runtime paths.
+
+The helper never installs extensions through per-capture flags. The server
+verifies each configured extension's manifest public key, saved unpacked
+registration, enabled state and exact absolute path, then checks that Chromium
+actually enables it before the API starts listening. Mounted runtime bundles
+remain immutable; prepare an updated bundle separately instead of editing it
+in place.
 
 Preserve the manifest's public `key` field to preserve extension ID across
 machines; keep the original public key for an existing extension, rather than
@@ -215,8 +274,8 @@ Do not assume a Windows/macOS profile, another Chrome brand/version, a personal
 profile or encrypted credentials can be moved into this image. Even with the same
 Linux image, extension/native messaging dependencies, encrypted storage, login
 expiry, machine identity and browser migrations require extension-specific
-verification. On macOS/Windows or a headless workstation, use a Linux VM or a
-remote Linux desktop with this same image. Wayland/X11 forwarding and the manual
+verification. For optional interactive editing on macOS/Windows or a headless workstation,
+use a Linux VM or a remote Linux desktop with this same image. Wayland/X11 forwarding and the manual
 desktop helper were not tested in this headless development environment; the
 same image's headed browser flow was tested under Xvfb.
 
@@ -239,7 +298,8 @@ preferred way to keep these dependencies consistent.
 ```sh
 make build
 cp config.example.json config.json
-# Edit config.json and the corresponding bundle.json for your prepared bundle.
+# Match profiles.default to the generated bundle.json.
+# For an initialized bundle: set extensions to [] and omit ready_selectors.
 # Create the configured token file, or omit auth to disable HTTP authentication.
 ./bin/webcappi check -config config.json
 ./bin/webcappi serve -config config.json
@@ -360,8 +420,8 @@ the supplied manifest.
 ### Capture parameters and responses
 
 GET requires an absolute HTTP(S) `url`; all other query parameters are optional.
-HTML POST requires no query parameters. Omitting `profile` selects the configured
-`default` profile, as does omitting CLI `-profile`. Specify another configured
+HTML POST requires no query parameters. Omitting `profile` selects the
+`default` profile (configured or generated), as does omitting CLI `-profile`. Specify another configured
 name to select a different profile. An explicitly empty or unknown profile name
 is rejected.
 `width` defaults to 800 and `height` to 480. Optional `ready_selector` waits for
@@ -415,7 +475,7 @@ disables internal caching. Configuration changes require a process restart.
 | `auth.bearer_token_file` | unset | Absolute shared Bearer token file path; omit `auth` to disable API authentication |
 | `browser_path` | `/opt/chrome/chrome` | Absolute, preinstalled browser path |
 | `no_sandbox` | `false` | Explicit browser sandbox opt-out |
-| `work_dir` | `/work` | Writable scratch, separate from templates/extensions |
+| `work_dir` | `/work` | Writable scratch and automatic template; separate from supplied templates/extensions |
 | `concurrency` | 1 | Active browser captures (1–32) |
 | `queue_size` | 8 | Additional distinct pending captures (0–1024) |
 | `max_requests` | 64 | Concurrent HTTP capture handlers, including coalesced waiters |
@@ -425,19 +485,21 @@ disables internal caching. Configuration changes require a process restart.
 | `cache_max_entries` | 128 | Additional cache metadata/entry bound |
 | `max_width`, `max_height` | 4096 each | Maximum viewport dimensions |
 | `max_pixels` | 8388608 | Additional viewport area bound |
-| `max_profile_bytes` | 536870912 | Maximum template bytes copied per capture |
+| `max_profile_bytes` | 536870912 | Maximum template bytes copied during initialization or per capture |
 | `max_post_bytes` | 1048576 | Maximum HTML POST body bytes (1–134217728) |
 | `max_png_bytes` | 41943040 | Maximum returned/cached PNG size |
-| `profiles` | required | Named immutable descriptors (1–128 profiles, including `default`) |
+| `profiles` | omitted | Named immutable descriptors; absent `default` is generated (128 total including `default`) |
 
-`profiles.default` must be configured and valid; startup fails if it is missing.
+`profiles.default` is optional. When absent, a temporary default is generated at
+startup, including when only other named profiles are supplied. An explicitly
+configured invalid `default` fails startup instead of falling back.
 The name `default` selects a capture profile; `profile_directory` identifies the
 individual Chromium profile inside its User Data Directory, usually `Default`.
 
 Profile fields are `user_data_dir`, `profile_directory`, `extensions`, and optional
 `ready_selectors`. The application pins and checks the browser version; profiles
 do not declare it.
-`user_data_dir` must have a sibling `bundle.json`. Scratch and templates cannot
+`user_data_dir` must have a sibling `bundle.json`. Scratch and supplied templates cannot
 overlap; copies reject special files and symlinks except obsolete top-level
 Chromium lock/endpoint files, which are excluded. Files in copies are independent
 and writable even when original files are read-only. No hard links, shared work
@@ -543,7 +605,8 @@ job with registry credentials can publish a single multi-platform image using
 on a builder supporting both platforms. Registry publication and an installed
 CI workflow are not part of these local build commands.
 
-After preparing a bundle and configuring matching descriptors:
+Configure authentication as needed. With automatic profile generation, omit
+`profiles` and run without a bundle mount:
 
 ```sh
 docker run --rm --name webcappi -p 127.0.0.1:8080:8080 \
@@ -551,11 +614,13 @@ docker run --rm --name webcappi -p 127.0.0.1:8080:8080 \
   --tmpfs /work:uid=10001,gid=10001,mode=700 --tmpfs /tmp \
   -v "$PWD/config.json:/etc/webcappi/config.json:ro" \
   -v /secure/path/webcappi-token:/run/secrets/webcappi/token:ro \
-  -v "$PWD/bundles:/bundles:ro" \
   webcappi:dev
 ```
 
-The runtime uses UID/GID **10001**; it must read bundles and configuration and
+To use prepared profiles, add a read-only `/bundles` mount and matching profile
+descriptors. `config.example.json` illustrates those optional settings.
+
+The runtime uses UID/GID **10001**; it must read configuration and any supplied bundles and
 write `/work`, `/tmp` and `/dev/shm`. Each capture has private HOME, XDG config/cache
 and a profile copy under its work directory. Browser temporary files use a
 separate private `/tmp/wc-*` directory, removed after browser exit; the short path
@@ -581,7 +646,7 @@ a controlled workload; doing so removes Chromium's sandbox isolation. See
 
 `deploy/kubernetes.yaml` supplies a single-replica Deployment, ClusterIP Service,
 ConfigMap, probes, resource limits, graceful termination, non-root execution,
-read-only root/bundle mounts, writable emptyDir scratch and memory-backed shared
+read-only root mounts, writable emptyDir scratch and memory-backed shared
 memory. Browser startup checks occur before listening. Readiness does not launch
 a browser on each probe or mark the server unready simply because its one slot
 is busy. A previously valid bundle becoming unreadable does make it unready.
@@ -596,16 +661,21 @@ kubectl create secret generic webcappi-auth \
   --from-file=token=/secure/path/webcappi-token
 ```
 
-Build the profile artifact independently of the API image:
+Set the API image's registry/digest reference before applying:
 
 ```sh
-docker build -f deploy/bundle.Dockerfile -t webcappi-profiles:default-20261023-1 bundles
-# Set registry/digest references in deploy/kubernetes.yaml before applying.
 kubectl apply -f deploy/kubernetes.yaml
 ```
 
-The initContainer copies the artifact to a pod-local emptyDir; the API mounts
-that volume read-only. No PVC is required because the template is reproducible
+For optional prepared profiles, build the artifact independently of the API image:
+
+```sh
+docker build -f deploy/bundle.Dockerfile -t webcappi-profiles:default-20261023-1 bundles
+```
+
+Add an initContainer to copy `/bundle/default` from this artifact to a pod-local
+emptyDir, mount that volume read-only at `/bundles` in the API container, and set
+`profiles.default` to match the bundle descriptor. No PVC is required because the template is reproducible
 from its artifact. Limit bundle size to the initContainer and volume resources;
 adjust defaults for larger profiles. API and bundle images can be updated
 independently. Prepare and qualify each bundle with the browser shipped in the
@@ -684,6 +754,14 @@ The Kubernetes manifest passed client-side dry-run validation. The current
 builder could not execute ARM64 build steps (`exec format error`), so this
 update's multi-platform image build did not complete and ARM64 runtime behavior
 was not verified. No cluster resources were created.
+
+Automatic default profiles passed Go 1.26.10 race tests and vet, the amd64 image
+build and real-browser tests. The container smoke test verifies omitted profiles,
+named-only profiles, configured-default precedence, immutable generated templates,
+readiness after template loss, and cleanup on SIGTERM and `check` exit. Cleanup is
+checked while the container and its scratch volume remain alive. Both CLI
+architectures build; the current builder's ARM64 execution limitation described
+above still prevents multi-platform image and ARM64 runtime verification.
 
 Implemented tests cover exact PNG dimensions, Japanese rendering, both HTML
 source modes and their secure-context status, a pixel-level

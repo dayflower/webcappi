@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -35,6 +36,7 @@ def main():
     image_platform = docker("image", "inspect", image, "--format", "{{.Os}}/{{.Architecture}}")
     if platform and image_platform != platform:
         raise SystemExit(f"Expected {platform} image, got {image_platform}")
+    subprocess.run([sys.executable, str(ROOT / "scripts/profile-smoke.py")], check=True)
     template = artifacts / "user-data"
     if not template.is_dir():
         raise SystemExit("Run make browser-test first to create the synthetic template.")

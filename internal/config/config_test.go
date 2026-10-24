@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -68,8 +69,40 @@ func TestConfigDecodeAndDefaults(t *testing.T) {
 			t.Fatalf("accepted %s", input)
 		}
 	}
+	for _, input := range []string{`{}`, `{"profiles":{}}`, `{"profiles":null}`} {
+		os.WriteFile(path, []byte(input), 0600)
+		c, err := Load(path)
+		if err != nil || len(c.Profiles) != 0 || c.Concurrency != 1 {
+			t.Fatalf("optional profiles/defaults: %+v, %v", c, err)
+		}
+	}
 	if c := Defaults(); c.Concurrency != 1 || c.NoSandbox || !strings.HasPrefix(c.BrowserPath, "/") {
 		t.Fatal("unexpected defaults")
+	}
+}
+
+func TestProfileCountIncludesAutomaticDefault(t *testing.T) {
+	c := Defaults()
+	c.Profiles = map[string]capture.Profile{}
+	p := capture.Profile{UserDataDir: "/bundles/default/user-data", ProfileDirectory: "Default"}
+	for i := 0; i < 127; i++ {
+		c.Profiles[fmt.Sprintf("profile-%d", i)] = p
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.Profiles["alternate"] = p
+	if err := c.Validate(); err == nil {
+		t.Fatal("automatic default exceeded the profile limit")
+	}
+	delete(c.Profiles, "alternate")
+	c.Profiles["default"] = p
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c.Profiles["default"] = capture.Profile{}
+	if err := c.Validate(); err == nil {
+		t.Fatal("invalid explicit default allowed")
 	}
 }
 

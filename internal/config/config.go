@@ -59,8 +59,12 @@ func Load(path string) (Config, error) {
 	defer f.Close()
 	d := json.NewDecoder(io.LimitReader(f, 1<<20))
 	d.DisallowUnknownFields()
-	if err = d.Decode(&c); err != nil {
+	decoded := &c
+	if err = d.Decode(&decoded); err != nil {
 		return c, err
+	}
+	if decoded == nil {
+		return c, errors.New("config must contain one JSON object")
 	}
 	var extra any
 	if err = d.Decode(&extra); err != io.EOF {
@@ -94,11 +98,12 @@ func (c Config) Validate() error {
 	if c.MaxWidth < 800 || c.MaxHeight < 480 || c.MaxWidth > 8192 || c.MaxHeight > 8192 || c.MaxPixels < 800*480 || c.MaxPixels > 32_000_000 {
 		return errors.New("invalid viewport limits")
 	}
-	if len(c.Profiles) == 0 || len(c.Profiles) > 128 {
-		return errors.New("configure 1..128 profiles")
-	}
+	count := len(c.Profiles)
 	if _, ok := c.Profiles[DefaultProfileName]; !ok {
-		return errors.New("profiles.default is required")
+		count++
+	}
+	if count > 128 {
+		return errors.New("configure at most 128 profiles including the automatic default")
 	}
 	for name, p := range c.Profiles {
 		if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(name) {
