@@ -39,14 +39,7 @@ func run(args []string) (err error) {
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	path := fs.String("config", "config.json", "server configuration")
-	profile := fs.String("profile", config.DefaultProfileName, "capture profile name")
-	url := fs.String("url", "", "page URL")
-	width := fs.Int("width", capture.DefaultViewportWidth, "viewport width")
-	height := fs.Int("height", capture.DefaultViewportHeight, "viewport height")
-	fs.Int("output-width", 0, "PNG width (defaults to viewport width)")
-	fs.Int("output-height", 0, "PNG height (defaults to viewport height)")
-	out := fs.String("out", "capture.png", "PNG output path")
-	selector := fs.String("ready-selector", "", "page readiness CSS selector")
+	flags := registerCaptureFlags(fs)
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -117,38 +110,13 @@ func run(args []string) (err error) {
 	}
 	s := service.New(ctx, c, renderer.CaptureWithMetadata)
 	defer s.Close()
-	api := httpapi.New(c, s, checkFiles)
 	if args[0] == "capture" {
-		// Reuse HTTP input validation so CLI and REST accept the same requests.
-		req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/capture", nil)
-		if err != nil {
-			return err
-		}
-		q := req.URL.Query()
-		q.Set("url", *url)
-		q.Set("profile", *profile)
-		q.Set("width", fmt.Sprint(*width))
-		q.Set("height", fmt.Sprint(*height))
-		fs.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "output-width":
-				q.Set("output_width", f.Value.String())
-			case "output-height":
-				q.Set("output_height", f.Value.String())
-			}
-		})
-		q.Set("ready_selector", *selector)
-		req.URL.RawQuery = q.Encode()
-		writer := &fileResponse{header: http.Header{}}
-		api.ServeHTTP(writer, req)
-		if writer.status != 200 {
-			return fmt.Errorf("capture HTTP %d: %s", writer.status, writer.body)
-		}
-		return os.WriteFile(*out, writer.body, 0600)
+		return captureToFile(ctx, c, s, flags.input(fs), *flags.out)
 	}
 	if args[0] != "serve" {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+	api := httpapi.New(c, s, checkFiles)
 	// The job timeout covers queueing, copying, browser startup and rendering.
 	server := &http.Server{Addr: c.Listen, Handler: auth.Handler(api), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: c.Timeout() + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan error, 1)
@@ -174,20 +142,4 @@ func run(args []string) (err error) {
 		return err
 	}
 	return nil
-}
-
-type fileResponse struct {
-	header http.Header
-	status int
-	body   []byte
-}
-
-func (f *fileResponse) Header() http.Header    { return f.header }
-func (f *fileResponse) WriteHeader(status int) { f.status = status }
-func (f *fileResponse) Write(b []byte) (int, error) {
-	if f.status == 0 {
-		f.status = 200
-	}
-	f.body = append(f.body, b...)
-	return len(b), nil
 }

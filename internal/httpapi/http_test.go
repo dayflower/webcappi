@@ -262,6 +262,24 @@ func TestInvalidInputAndErrors(t *testing.T) {
 
 type errorGetter struct{ err error }
 
+func TestCaptureValidationOrder(t *testing.T) {
+	api, _ := setup(t, func(context.Context, capture.Request) ([]byte, error) {
+		t.Fatal("invalid input reached renderer")
+		return nil, nil
+	})
+	for _, tc := range []struct{ query, message string }{
+		{"url=file:///tmp/x&width=NaN", "url must be an absolute http(s) URL without credentials"},
+		{"url=http://fixture/&width=4097&output_height=NaN", "output_height must be a positive integer"},
+		{"url=http://fixture/&output_width=4097&delay_ms=NaN", "output exceeds configured limits"},
+		{"url=http://fixture/&delay_ms=NaN&profile=missing", "delay_ms must be an integer between 0 and 300000"},
+	} {
+		w := get(api, "/capture?"+tc.query, "")
+		if w.Code != 400 || w.Body.String() != fmt.Sprintf("{\"error\":%q}\n", tc.message) {
+			t.Fatalf("%s: status=%d body=%s", tc.query, w.Code, w.Body)
+		}
+	}
+}
+
 func (e errorGetter) Get(context.Context, capture.Request) (*service.Image, error) { return nil, e.err }
 
 func TestHealthReadinessAndAdmission(t *testing.T) {

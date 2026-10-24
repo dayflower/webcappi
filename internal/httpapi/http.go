@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dayflower/webcappi/internal/capture"
+	"github.com/dayflower/webcappi/internal/captureinput"
 	"github.com/dayflower/webcappi/internal/config"
 	"github.com/dayflower/webcappi/internal/service"
 )
@@ -222,60 +223,37 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 			req.HTMLMode = values[0]
 		}
 	}
+	in := captureinput.Input{ReadySelector: q.Get("ready_selector")}
 	if r.Method == http.MethodGet {
-		req.URL = q.Get("url")
-		if len(req.URL) == 0 || len(req.URL) > 8192 {
-			return req, errors.New("url is required and must be <=8192 bytes")
-		}
-		u, err := url.Parse(req.URL)
-		if err != nil || u.Host == "" || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || strings.ContainsAny(req.URL, "\x00\r\n") {
-			return req, errors.New("url must be an absolute http(s) URL without credentials")
-		}
-		if port := u.Port(); port != "" {
-			n, e := strconv.Atoi(port)
-			if e != nil || n < 1 || n > 65535 {
-				return req, errors.New("invalid URL port")
-			}
-		}
+		u := q.Get("url")
+		in.URL = &u
 	}
-	req.Width, req.Height = capture.DefaultViewportWidth, capture.DefaultViewportHeight
-	for key, dst := range map[string]*int{"width": &req.Width, "height": &req.Height, "output_width": &req.OutputWidth, "output_height": &req.OutputHeight} {
+	for key, dst := range map[string]**int{"width": &in.Width, "height": &in.Height, "output_width": &in.OutputWidth, "output_height": &in.OutputHeight} {
 		if values, ok := q[key]; ok {
-			n, e := strconv.Atoi(values[0])
-			if e != nil || n < 1 {
-				return req, fmt.Errorf("%s must be a positive integer", key)
+			n, err := strconv.Atoi(values[0])
+			if err != nil {
+				// Defer rejection to the shared validator so URL errors still win.
+				n = 0
 			}
-			*dst = n
+			*dst = &n
 		}
-	}
-	if req.Width > a.cfg.MaxWidth || req.Height > a.cfg.MaxHeight || int64(req.Width)*int64(req.Height) > a.cfg.MaxPixels {
-		return req, errors.New("viewport exceeds configured limits")
-	}
-	req.OutputWidth, req.OutputHeight = req.OutputSize()
-	if req.OutputWidth > a.cfg.MaxWidth || req.OutputHeight > a.cfg.MaxHeight || int64(req.OutputWidth)*int64(req.OutputHeight) > a.cfg.MaxPixels {
-		return req, errors.New("output exceeds configured limits")
 	}
 	if values, ok := q["delay_ms"]; ok {
 		n, err := strconv.Atoi(values[0])
-		if err != nil || n < 0 || n > 300_000 {
-			return req, errors.New("delay_ms must be an integer between 0 and 300000")
+		if err != nil {
+			n = -1
 		}
-		req.DelayMS = n
+		in.DelayMS = n
 	}
-	req.ProfileName = config.DefaultProfileName
 	if values, ok := q["profile"]; ok {
-		req.ProfileName = values[0]
+		in.ProfileName = &values[0]
 	}
-	p, ok := a.cfg.Profiles[req.ProfileName]
-	if !ok {
-		return req, errors.New("unknown profile")
-	}
-	req.Profile = p
-	req.ReadySelector = q.Get("ready_selector")
-	if len(req.ReadySelector) > 1024 {
-		return req, errors.New("ready_selector must be <=1024 bytes")
-	}
-	return req, nil
+	validated, err := captureinput.Normalize(in, captureinput.Options{
+		MaxWidth: a.cfg.MaxWidth, MaxHeight: a.cfg.MaxHeight, MaxPixels: a.cfg.MaxPixels,
+		DefaultProfileName: config.DefaultProfileName, Profiles: a.cfg.Profiles,
+	})
+	validated.HTMLMode = req.HTMLMode
+	return validated, err
 }
 
 func matchesETag(headers []string, etag string) bool {

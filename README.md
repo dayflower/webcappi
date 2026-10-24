@@ -309,8 +309,9 @@ cp config.example.json config.json
 
 `check` validates configuration, bundle descriptors, browser version, scratch
 access and a real browser launch on each profile clone. The CLI capture command
-uses the same validation and rendering path as the HTTP server and always
-generates a new PNG. `version` prints the supported browser version.
+shares input validation with the HTTP server, calls the capture service directly
+and saves a new PNG to the output file. `version` prints the supported browser
+version.
 
 ```sh
 curl --get http://localhost:8080/capture \
