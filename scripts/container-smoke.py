@@ -145,6 +145,13 @@ def main():
             changed = get(capture(), headers["ETag"])
             assert changed[0] == 200, f"refresh returned HTTP {changed[0]}: {changed[2][:1024]!r}"
             assert changed[1]["ETag"] != headers["ETag"], "page change did not change the PNG ETag"
+            started = time.monotonic()
+            delayed = get(capture(delay_ms=600))
+            assert delayed[0] == 200, (delayed[0], delayed[2][:1024])
+            assert time.monotonic() - started >= 0.6, "delay reused a capture with a different delay"
+            assert get(capture(delay_ms=600), delayed[1]["ETag"])[0] == 304
+            assert get(capture(delay_ms=-1))[0] == 400
+            assert get(capture(delay_ms=10000))[0] == 504
             assert get(capture(ready_selector="#never-ready"))[0] == 504
             assert get(capture(url="http://fixture:8000/missing"))[0] == 502
             assert get(capture(width=99999))[0] == 400

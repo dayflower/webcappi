@@ -173,7 +173,7 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	if err != nil {
 		return req, errors.New("invalid query encoding")
 	}
-	allowed := map[string]bool{"url": true, "width": true, "height": true, "profile": true, "ready_selector": true}
+	allowed := map[string]bool{"url": true, "width": true, "height": true, "profile": true, "ready_selector": true, "delay_ms": true}
 	if r.Method == http.MethodPost {
 		delete(allowed, "url")
 		allowed["html_mode"] = true
@@ -220,6 +220,13 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	}
 	if req.Width > a.cfg.MaxWidth || req.Height > a.cfg.MaxHeight || int64(req.Width)*int64(req.Height) > a.cfg.MaxPixels {
 		return req, errors.New("viewport exceeds configured limits")
+	}
+	if values, ok := q["delay_ms"]; ok {
+		n, err := strconv.Atoi(values[0])
+		if err != nil || n < 0 || n > 300_000 {
+			return req, errors.New("delay_ms must be an integer between 0 and 300000")
+		}
+		req.DelayMS = n
 	}
 	req.ProfileName = config.DefaultProfileName
 	if values, ok := q["profile"]; ok {

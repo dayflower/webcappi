@@ -39,6 +39,52 @@ func get(api *API, path, etag string) *httptest.ResponseRecorder {
 
 const valid = "/capture?profile=alternate&url=http%3A%2F%2Ffixture%2F"
 
+func TestCaptureDelayQuery(t *testing.T) {
+	var calls atomic.Int32
+	api, _ := setup(t, func(_ context.Context, req capture.Request) ([]byte, error) {
+		calls.Add(1)
+		return []byte(strconv.Itoa(req.DelayMS)), nil
+	})
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"", "0"},
+		{"&delay_ms=0", "0"},
+		{"&delay_ms=1000", "1000"},
+		{"&delay_ms=1000", "1000"},
+		{"&delay_ms=2000", "2000"},
+		{"&delay_ms=300000", "300000"},
+	} {
+		if w := get(api, valid+tc.query, ""); w.Code != 200 || w.Body.String() != tc.want {
+			t.Fatalf("GET %s: status=%d body=%s", tc.query, w.Code, w.Body)
+		}
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("delay cache separation or zero normalization failed: %d renders", calls.Load())
+	}
+	for _, value := range []string{"0", "1000", "300000"} {
+		if w := post(api, "/capture?delay_ms="+value, "<p>hello</p>", "text/html", ""); w.Code != 200 || w.Body.String() != value {
+			t.Fatalf("POST delay_ms=%s: status=%d body=%s", value, w.Code, w.Body)
+		}
+	}
+	for _, query := range []string{
+		"delay_ms=", "delay_ms=-1", "delay_ms=0.5", "delay_ms=NaN",
+		"delay_ms=300001", "delay_ms=99999999999999999999999",
+		"delay_ms=1&delay_ms=2",
+	} {
+		if w := get(api, valid+"&"+query, ""); w.Code != 400 {
+			t.Fatalf("GET %s: status=%d body=%s", query, w.Code, w.Body)
+		}
+		if w := post(api, "/capture?"+query, "<p>hello</p>", "text/html", ""); w.Code != 400 {
+			t.Fatalf("POST %s: status=%d body=%s", query, w.Code, w.Body)
+		}
+	}
+	if calls.Load() != 7 {
+		t.Fatal("invalid delay rendered")
+	}
+}
+
 func TestDefaultProfileSelection(t *testing.T) {
 	var calls atomic.Int32
 	api, _ := setup(t, func(_ context.Context, req capture.Request) ([]byte, error) {

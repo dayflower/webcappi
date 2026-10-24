@@ -68,6 +68,7 @@ func Key(req capture.Request) string {
 		Height        int
 		ProfileName   string
 		ReadySelector string
+		DelayMS       int
 	}{
 		Schema:        "viewport-png-v1-dsf1",
 		URL:           req.URL,
@@ -75,6 +76,7 @@ func Key(req capture.Request) string {
 		Height:        req.Height,
 		ProfileName:   req.ProfileName,
 		ReadySelector: req.ReadySelector,
+		DelayMS:       req.DelayMS,
 	})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
@@ -29,6 +30,7 @@ type Request struct {
 	ProfileName   string
 	Profile       Profile
 	ReadySelector string
+	DelayMS       int
 }
 
 type Renderer struct {
@@ -159,6 +161,15 @@ func (r Renderer) Capture(ctx context.Context, req Request) (png []byte, err err
 	// inserted by the extension participate too. No network-idle heuristic.
 	if _, err = chromedp.Run(tab, chromedp.Evaluate[bool](assetsReady, chromedp.EvalAwaitPromise)); err != nil {
 		return nil, fmt.Errorf("assets: %w", err)
+	}
+	if req.DelayMS > 0 {
+		timer := time.NewTimer(time.Duration(req.DelayMS) * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-tab.Done():
+			return nil, tab.Err()
+		}
 	}
 	return chromedp.Run(tab, chromedp.CaptureScreenshot())
 }

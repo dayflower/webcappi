@@ -338,7 +338,7 @@ curl 'http://localhost:8080/capture' \
 POST requires a non-empty UTF-8 HTML body. `max_post_bytes` sets the size limit
 in bytes (default: 1 MiB, or 1,048,576 bytes). JSON, form bodies, other charsets and compressed bodies are
 not accepted. `url` is not accepted on POST. The query parameters `profile`,
-`width`, `height` and `ready_selector` work as on GET.
+`width`, `height`, `ready_selector` and `delay_ms` work as on GET.
 
 The POST-only query parameter `html_mode` selects how Chromium opens the HTML:
 
@@ -441,6 +441,15 @@ Omit `ready_selectors` or use an empty array to skip profile-specific readiness.
 Keep the profile descriptor in `bundle.json` identical to the configuration when
 changing these settings. The HTTP query parameter remains `ready_selector`.
 
+The optional GET/POST query parameter `delay_ms` adds a wait after all readiness
+checks, including the two animation frames, immediately before the screenshot.
+It accepts an integer from 0 to 300000 milliseconds and defaults to 0 (no extra
+wait). For example, `&delay_ms=1000` waits one additional second. Empty, negative,
+fractional, out-of-range or repeated values are rejected with 400. The delay
+shares the overall capture deadline and is interrupted by cancellation; it does
+not extend `capture_timeout_seconds`. Cache hits return the existing PNG without
+waiting again. Assets and readiness signals are not rechecked after the delay.
+
 GET and POST are accepted on `/capture`; repeated
 and unknown query parameters, credentials in URLs, unsupported schemes and excessive dimensions
 are rejected. URL fragments remain part of the capture URL and cache key.
@@ -456,12 +465,14 @@ requested URL. Do not put credentials in query strings.
 
 Navigation waits for the main document's load event. Next come the requested page
 and extension selectors, `document.fonts.ready`, load/decode of `<img>` elements
-intersecting the viewport, and two animation frames. Broken visible images fail
-the capture. This does not infer application readiness, load all lazy/offscreen
+intersecting the viewport, two animation frames, and the optional `delay_ms` wait.
+Broken visible images fail the capture. This does not infer application
+readiness, load all lazy/offscreen
 images, inspect cross-origin frames, or independently wait for CSS backgrounds,
 video, canvas, animations or future DOM changes. Use a page/extension readiness
-contract for those cases. No network-idle or fixed-duration delay is used as a
-capture readiness contract. All waits share the overall deadline.
+contract for those cases. No network-idle check or automatic fixed-duration delay
+is used. The optional delay does not guarantee application readiness. All waits
+share the overall deadline.
 
 ## Configuration
 
@@ -479,7 +490,7 @@ disables internal caching. Configuration changes require a process restart.
 | `concurrency` | 1 | Active browser captures (1–32) |
 | `queue_size` | 8 | Additional distinct pending captures (0–1024) |
 | `max_requests` | 64 | Concurrent HTTP capture handlers, including coalesced waiters |
-| `capture_timeout_seconds` | 30 | Queue + profile copy + browser start + readiness + PNG (1–300) |
+| `capture_timeout_seconds` | 30 | Queue + profile copy + browser start + readiness + delay + PNG (1–300) |
 | `cache_ttl_seconds` | 60 | Fixed freshness lifetime from generation (0–86400) |
 | `cache_max_bytes` | 67108864 | LRU PNG byte capacity |
 | `cache_max_entries` | 128 | Additional cache metadata/entry bound |
@@ -516,9 +527,9 @@ the example's emptyDir is reclaimed with the pod.
 
 ## Cache semantics
 
-The GET cache key contains URL, viewport, the request's `ready_selector`, profile
-name, scale factor and renderer schema. Profile settings and bundle contents are
-not part of the key. Changes under the same profile name can reuse existing
+The GET cache key contains URL, viewport, the request's `ready_selector` and
+`delay_ms`, profile name, scale factor and renderer schema. Profile settings and
+bundle contents are not part of the key. Changes under the same profile name can reuse existing
 entries until TTL expiry or a process restart discards the internal cache.
 Cache entries use an LRU bounded by PNG bytes and entry count; expired entries
 are removed lazily on requests. Errors are not cached. Oversized cache entries
