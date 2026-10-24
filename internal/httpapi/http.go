@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dayflower/webcappi/internal/capture"
 	"github.com/dayflower/webcappi/internal/config"
@@ -22,6 +25,7 @@ import (
 type Getter interface {
 	Get(context.Context, capture.Request) (*service.Image, error)
 }
+
 type API struct {
 	cfg      config.Config
 	service  Getter
@@ -38,8 +42,12 @@ func (a *API) Drain() { a.draining.Store(true) }
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", "GET")
+	allow := "GET"
+	if r.URL.Path == "/capture" {
+		allow = "GET, POST"
+	}
+	if r.Method != http.MethodGet && !(r.URL.Path == "/capture" && r.Method == http.MethodPost) {
+		w.Header().Set("Allow", allow)
 		fail(w, 405, "method not allowed")
 		return
 	}
@@ -87,6 +95,34 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "too many capture requests")
 		return
 	}
+	if r.Method == http.MethodPost {
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "text/html" || (params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8")) {
+			fail(w, 415, "Content-Type must be text/html with UTF-8 encoding")
+			return
+		}
+		if encoding := r.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+			fail(w, 415, "Content-Encoding is not supported")
+			return
+		}
+		// Admission precedes body buffering so uploads share the handler bound.
+		r.Body = http.MaxBytesReader(w, r.Body, a.cfg.MaxPOSTBytes)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				fail(w, 413, fmt.Sprintf("HTML must be <=%d bytes", a.cfg.MaxPOSTBytes))
+			} else {
+				fail(w, 400, "could not read HTML body")
+			}
+			return
+		}
+		if !utf8.Valid(body) || len(strings.TrimSpace(string(body))) == 0 {
+			fail(w, 400, "HTML must be non-empty UTF-8 text")
+			return
+		}
+		req.HTML = string(body)
+	}
 	img, err := a.service.Get(r.Context(), req)
 	if err != nil {
 		switch {
@@ -103,22 +139,24 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	w.Header().Set("ETag", img.ETag)
-	// Reusing an image never resets its freshness. Rounding age upward avoids
-	// granting a partial extra second of freshness on each cache hit.
-	if a.cfg.CacheTTLSeconds > 0 {
-		w.Header().Set("Cache-Control", fmt.Sprintf("private, max-age=%d, must-revalidate", a.cfg.CacheTTLSeconds))
-		age := int(math.Ceil(time.Since(img.Created).Seconds()))
-		if age < 0 {
-			age = 0
+	if r.Method == http.MethodGet {
+		w.Header().Set("ETag", img.ETag)
+		// Reusing an image never resets its freshness. Rounding age upward avoids
+		// granting a partial extra second of freshness on each cache hit.
+		if a.cfg.CacheTTLSeconds > 0 {
+			w.Header().Set("Cache-Control", fmt.Sprintf("private, max-age=%d, must-revalidate", a.cfg.CacheTTLSeconds))
+			age := int(math.Ceil(time.Since(img.Created).Seconds()))
+			if age < 0 {
+				age = 0
+			}
+			w.Header().Set("Age", strconv.Itoa(age))
+		} else {
+			w.Header().Set("Cache-Control", "private, no-cache")
 		}
-		w.Header().Set("Age", strconv.Itoa(age))
-	} else {
-		w.Header().Set("Cache-Control", "private, no-cache")
-	}
-	if matchesETag(r.Header.Values("If-None-Match"), img.ETag) {
-		w.WriteHeader(304)
-		return
+		if matchesETag(r.Header.Values("If-None-Match"), img.ETag) {
+			w.WriteHeader(304)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Length", strconv.Itoa(len(img.PNG)))
@@ -136,23 +174,38 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 		return req, errors.New("invalid query encoding")
 	}
 	allowed := map[string]bool{"url": true, "width": true, "height": true, "profile": true, "ready_selector": true}
+	if r.Method == http.MethodPost {
+		delete(allowed, "url")
+		allowed["html_mode"] = true
+	}
 	for key, values := range q {
 		if !allowed[key] || len(values) != 1 {
 			return req, fmt.Errorf("unknown or repeated parameter %q", key)
 		}
 	}
-	req.URL = q.Get("url")
-	if len(req.URL) == 0 || len(req.URL) > 8192 {
-		return req, errors.New("url is required and must be <=8192 bytes")
+	if r.Method == http.MethodPost {
+		req.HTMLMode = capture.HTMLModeFile
+		if values, ok := q["html_mode"]; ok {
+			if values[0] != capture.HTMLModeFile && values[0] != capture.HTMLModeLoopback {
+				return req, errors.New("html_mode must be file or loopback")
+			}
+			req.HTMLMode = values[0]
+		}
 	}
-	u, err := url.Parse(req.URL)
-	if err != nil || u.Host == "" || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || strings.ContainsAny(req.URL, "\x00\r\n") {
-		return req, errors.New("url must be an absolute http(s) URL without credentials")
-	}
-	if port := u.Port(); port != "" {
-		n, e := strconv.Atoi(port)
-		if e != nil || n < 1 || n > 65535 {
-			return req, errors.New("invalid URL port")
+	if r.Method == http.MethodGet {
+		req.URL = q.Get("url")
+		if len(req.URL) == 0 || len(req.URL) > 8192 {
+			return req, errors.New("url is required and must be <=8192 bytes")
+		}
+		u, err := url.Parse(req.URL)
+		if err != nil || u.Host == "" || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || strings.ContainsAny(req.URL, "\x00\r\n") {
+			return req, errors.New("url must be an absolute http(s) URL without credentials")
+		}
+		if port := u.Port(); port != "" {
+			n, e := strconv.Atoi(port)
+			if e != nil || n < 1 || n > 65535 {
+				return req, errors.New("invalid URL port")
+			}
 		}
 	}
 	req.Width, req.Height = 800, 480

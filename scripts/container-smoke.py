@@ -58,7 +58,7 @@ def main():
         # examples preserve the sandbox unless explicitly configured otherwise.
         cfg = dict(no_sandbox=True, work_dir="/work/captures", concurrency=1,
                    queue_size=1, max_requests=8, capture_timeout_seconds=10,
-                   cache_ttl_seconds=2, profiles={"reader": profile})
+                   cache_ttl_seconds=2, max_post_bytes=1024, profiles={"reader": profile})
         token = "synthetic-smoke-token"
         (data / "token").write_text(token + "\n")
         (data / "token").chmod(0o644)
@@ -83,11 +83,13 @@ def main():
             port = docker("port", PREFIX + "-api", "8080/tcp").rsplit(":", 1)[1]
             base = f"http://127.0.0.1:{port}"
 
-            def get(path, etag=None, authorization=f"Bearer {token}"):
+            def get(path, etag=None, authorization=f"Bearer {token}", data=None, content_type=None):
                 headers = {"If-None-Match": etag} if etag else {}
                 if authorization is not None:
                     headers["Authorization"] = authorization
-                req = urllib.request.Request(base + path, headers=headers)
+                if content_type:
+                    headers["Content-Type"] = content_type
+                req = urllib.request.Request(base + path, headers=headers, data=data)
                 try:
                     response = urllib.request.urlopen(req, timeout=15)
                 except urllib.error.HTTPError as error:
@@ -144,6 +146,47 @@ def main():
             assert get(capture(ready_selector="#never-ready"))[0] == 504
             assert get(capture(url="http://fixture:8000/missing"))[0] == 502
             assert get(capture(width=99999))[0] == 400
+
+            html_path = "/capture?" + urllib.parse.urlencode(dict(profile="reader", width=320, height=200,
+                                                                  ready_selector="#ready"))
+            html = ("<!doctype html><style>body{background:#123456}</style>"
+                    "<p id=ready>日本語 HTML</p>").encode("utf-8")
+
+            def post_html(body=html, etag=None, authorization=f"Bearer {token}", mode=None):
+                path = html_path
+                if mode is not None:
+                    path += "&" + urllib.parse.urlencode(dict(html_mode=mode))
+                return get(path, etag=etag, authorization=authorization,
+                           data=body, content_type="text/html; charset=utf-8")
+
+            assert post_html(authorization=None)[0] == 401
+            before_html_logs = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
+            before_html_renders = (before_html_logs.stdout + before_html_logs.stderr).count("capture started")
+            html_status, html_headers, html_png = post_html()
+            assert html_status == 200, (html_status, html_png[:1024])
+            assert html_headers["Content-Type"] == "image/png"
+            assert html_headers["Cache-Control"] == "no-store"
+            assert "ETag" not in html_headers and "Age" not in html_headers
+            assert struct.unpack(">II", html_png[16:24]) == (320, 200)
+            assert post_html()[2] == html_png
+            assert post_html(etag="*")[0] == 200
+            changed_html = post_html(body=html.replace(b"#123456", b"#abcdef"))
+            assert changed_html[0] == 200 and changed_html[2] != html_png
+            for mode in ("file", "loopback"):
+                mode_status, mode_headers, mode_png = post_html(mode=mode)
+                assert mode_status == 200, (mode, mode_status, mode_png[:1024])
+                assert mode_headers["Content-Type"] == "image/png"
+                assert mode_headers["Cache-Control"] == "no-store"
+                assert "ETag" not in mode_headers and "Age" not in mode_headers
+                assert struct.unpack(">II", mode_png[16:24]) == (320, 200)
+                (artifacts / f"api-html-{mode}.png").write_bytes(mode_png)
+            assert post_html(mode="data")[0] == 400
+            assert post_html(body=b"x" * (cfg["max_post_bytes"] + 1))[0] == 413
+            assert get(html_path, data=b"{}", content_type="application/json")[0] == 415
+            after_html_logs = subprocess.run(["docker", "logs", PREFIX + "-api"], capture_output=True, text=True, check=True)
+            after_html_renders = (after_html_logs.stdout + after_html_logs.stderr).count("capture started")
+            assert after_html_renders == before_html_renders + 6, "POST reused a previous render"
+            (artifacts / "api-html.png").write_bytes(html_png)
             assert docker("exec", PREFIX + "-api", "find", "/work/captures", "-mindepth", "1") == ""
             after = hashlib.sha256()
             for path in sorted(template.rglob("*")):
@@ -153,7 +196,7 @@ def main():
             docker("stop", "-t", "10", PREFIX + "-api")
             state = json.loads(docker("inspect", PREFIX + "-api"))[0]["State"]
             assert state["ExitCode"] == 0, state
-            print("PASS: real container REST, Bearer authentication, private DNS, PNG, extension, coalescing/cache, fresh ETag, errors, cleanup, shutdown")
+            print("PASS: real container REST, Bearer authentication, private DNS, URL/HTML PNG, extension, coalescing/cache, fresh ETag, errors, cleanup, shutdown")
         finally:
             for container in reversed(created):
                 docker("rm", "-f", container, check=False)

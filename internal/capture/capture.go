@@ -24,6 +24,8 @@ type Profile struct {
 
 type Request struct {
 	URL           string
+	HTML          string
+	HTMLMode      string
 	Width         int
 	Height        int
 	ProfileName   string
@@ -122,7 +124,20 @@ func (r Renderer) Capture(ctx context.Context, req Request) (png []byte, err err
 	if err = chromedp.Do(tab, chromedp.EmulateViewport(int64(req.Width), int64(req.Height), chromedp.EmulateScale(1))); err != nil {
 		return nil, err
 	}
-	response, err := chromedp.Run(tab, chromedp.NavigateResponse(req.URL))
+	url := req.URL
+	if req.HTML != "" {
+		var closeHTML func() error
+		url, closeHTML, err = prepareHTML(ctx, work, req.HTML, req.HTMLMode)
+		if err != nil {
+			return nil, fmt.Errorf("prepare HTML: %w", err)
+		}
+		defer func() {
+			if e := closeHTML(); e != nil && err == nil {
+				err = fmt.Errorf("close HTML source: %w", e)
+			}
+		}()
+	}
+	response, err := chromedp.Run(tab, chromedp.NavigateResponse(url))
 	if err != nil {
 		return nil, fmt.Errorf("navigate: %w", err)
 	}

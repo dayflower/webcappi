@@ -35,6 +35,7 @@ type Config struct {
 	MaxHeight             int                        `json:"max_height"`
 	MaxPixels             int64                      `json:"max_pixels"`
 	MaxProfileBytes       int64                      `json:"max_profile_bytes"`
+	MaxPOSTBytes          int64                      `json:"max_post_bytes"`
 	MaxPNGBytes           int64                      `json:"max_png_bytes"`
 	Profiles              map[string]capture.Profile `json:"profiles"`
 }
@@ -44,7 +45,7 @@ type Auth struct {
 }
 
 func Defaults() Config {
-	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, CacheTTLSeconds: 60, CacheMaxBytes: 64 << 20, CacheMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, MaxProfileBytes: 512 << 20, MaxPNGBytes: 40 << 20}
+	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, CacheTTLSeconds: 60, CacheMaxBytes: 64 << 20, CacheMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
 }
 
 func Load(path string) (Config, error) {
@@ -84,6 +85,9 @@ func (c Config) Validate() error {
 	}
 	if c.CacheMaxBytes < 0 || c.CacheMaxBytes > 4<<30 || c.CacheMaxEntries < 0 || c.CacheMaxEntries > 10000 || c.MaxPNGBytes < 1024 || c.MaxPNGBytes > 128<<20 || c.MaxProfileBytes < 1 || c.MaxProfileBytes > 8<<30 {
 		return errors.New("invalid byte or entry limit")
+	}
+	if c.MaxPOSTBytes < 1 || c.MaxPOSTBytes > 128<<20 {
+		return errors.New("max_post_bytes must be between 1 and 134217728")
 	}
 	if c.MaxWidth < 800 || c.MaxHeight < 480 || c.MaxWidth > 8192 || c.MaxHeight > 8192 || c.MaxPixels < 800*480 || c.MaxPixels > 32_000_000 {
 		return errors.New("invalid viewport limits")

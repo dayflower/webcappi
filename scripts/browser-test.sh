@@ -25,6 +25,8 @@ docker run --platform "$platform" --name "$container" --shm-size=512m \
   "$image" \
   xvfb-run -a /app/capture.test -test.v -test.timeout=90s
 docker cp "$container:/home/webcappi/extension.png" "$artifacts/extension.png"
+docker cp "$container:/home/webcappi/html.png" "$artifacts/html.png"
+docker cp "$container:/home/webcappi/html-loopback.png" "$artifacts/html-loopback.png"
 if [[ -d "$artifacts/user-data" ]]; then
   echo "Remove $artifacts/user-data before exporting another synthetic template." >&2
 else

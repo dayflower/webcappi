@@ -117,3 +117,50 @@ func TestAuthConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestMaxPOSTBytesConfig(t *testing.T) {
+	input, err := os.ReadFile("../../config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base map[string]any
+	if err := json.Unmarshal(input, &base); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  int64
+	}{
+		{"omitted", nil, 1 << 20},
+		{"small", 16, 16},
+		{"maximum", 128 << 20, 128 << 20},
+		{"zero", 0, 0},
+		{"negative", -1, 0},
+		{"too large", (128 << 20) + 1, 0},
+		{"wrong type", "1024", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			delete(base, "max_post_bytes")
+			if tc.value != nil {
+				base["max_post_bytes"] = tc.value
+			}
+			b, err := json.Marshal(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, b, 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if tc.want == 0 {
+				if err == nil {
+					t.Fatal("invalid POST limit accepted")
+				}
+			} else if err != nil || cfg.MaxPOSTBytes != tc.want {
+				t.Fatalf("max_post_bytes=%d, error=%v", cfg.MaxPOSTBytes, err)
+			}
+		})
+	}
+}

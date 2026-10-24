@@ -1,7 +1,7 @@
 # webcappi
 
-A Go REST server that captures a URL as a viewport-sized PNG using a fresh
-Chromium process and a disposable copy of a prepared browser profile. The first
+A Go REST server that captures a URL or posted HTML as a viewport-sized PNG using
+a fresh Chromium process and a disposable copy of a prepared browser profile. The first
 release targets **Linux amd64 and arm64**, one replica and an in-process bounded
 PNG cache.
 Private addresses and cluster Service DNS names are intentionally supported.
@@ -114,8 +114,10 @@ Xvfb and a minimal Manifest V3 extension. They explicitly disable the browser
 sandbox inside disposable test containers on hosts whose default container
 policy does not support it. This is separate from production defaults.
 
-The tests export `artifacts/extension.png`, `artifacts/api.png`, and a synthetic
-User Data Directory at `artifacts/user-data`. Remove the old synthetic directory
+The tests export `artifacts/extension.png`, `artifacts/html.png`,
+`artifacts/html-loopback.png`, `artifacts/api.png`, `artifacts/api-html.png`,
+`artifacts/api-html-file.png`, `artifacts/api-html-loopback.png`, and a synthetic User Data Directory
+at `artifacts/user-data`. Remove the old synthetic directory
 before exporting another one; the script will not overwrite it. The fixture
 extension is installed at `/src/testdata/extension` in the test container, so its
 synthetic profile is usable only with that same path. It is not the production
@@ -190,6 +192,8 @@ without headless mode, using an isolated User Data Directory. In that browser:
 2. Select `/bundles/reader/extensions/verification` for the sample extension.
 3. For real extensions, configure their permissions/settings, finish onboarding
    and logins if needed, and verify operation on representative target pages.
+   To use an extension on posted HTML, enable **Allow access to file URLs** in
+   its Details page and ensure its content-script matches include `file:` URLs.
 4. Close welcome/setup tabs. Use the browser's **Exit** command so databases flush.
 5. The helper exports the normally closed User Data Directory and `bundle.json`.
 
@@ -257,11 +261,57 @@ curl --get http://localhost:8080/capture \
   --output capture.png
 ```
 
-| GET endpoint | Behavior |
+| Method and endpoint | Behavior |
 | --- | --- |
-| `/capture` | Direct `image/png` response; no JSON image wrapper |
-| `/healthz` | Process liveness; does not start Chromium |
-| `/readyz` | Checks immutable bundle readability and writable scratch; 503 during shutdown |
+| `GET /capture` | Capture an HTTP(S) URL as a direct `image/png` response |
+| `POST /capture` | Capture a raw HTML body as a direct `image/png` response |
+| `GET /healthz` | Process liveness; does not start Chromium |
+| `GET /readyz` | Checks immutable bundle readability and writable scratch; 503 during shutdown |
+
+To render a local HTML file, send its contents with `Content-Type: text/html`:
+
+```sh
+curl 'http://localhost:8080/capture?profile=reader&width=800&height=480' \
+  --header 'Authorization: Bearer YOUR_TOKEN' \
+  --header 'Content-Type: text/html; charset=utf-8' \
+  --data-binary @page.html \
+  --output capture.png
+```
+
+POST requires a non-empty UTF-8 HTML body. `max_post_bytes` sets the size limit
+in bytes (default: 1 MiB, or 1,048,576 bytes). JSON, form bodies, other charsets and compressed bodies are
+not accepted. `url` is not accepted on POST. The query parameters `profile`,
+`width`, `height` and `ready_selector` work as on GET.
+
+The POST-only query parameter `html_mode` selects how Chromium opens the HTML:
+
+| `html_mode` | Behavior |
+| --- | --- |
+| `file` (default when omitted) | Write a private temporary file and open its `file:///` URL |
+| `loopback` | Serve the document from `http://127.0.0.1:<temporary-port>/` during the capture |
+
+For example, append `&html_mode=loopback` to the POST URL above to use HTTP.
+An empty, unknown or repeated `html_mode` is rejected with 400. GET does not
+accept this parameter. This is a request option, not a server configuration field.
+
+Both modes open a new capture tab, run scripts, and use the same disposable
+profile, viewport, readiness/asset checks and deadline. File mode adds a UTF-8
+BOM; loopback mode sends `Content-Type: text/html; charset=utf-8`, so neither
+requires a `<meta charset>` element. Temporary files and loopback listeners are
+removed on completion, failure or cancellation. The loopback server exposes
+only the posted document, not a directory or another application endpoint.
+
+Use absolute resource URLs or an HTML `<base href="https://example.com/">` for
+relative paths. A base URL only resolves resources; it does not give the page
+that site's origin or same-origin access to its storage. Avoid relying on a
+fixed `location`: file paths and loopback ports are temporary. Browser
+origin/CORS rules still apply to external resources. File mode requires
+extensions to have file access enabled in the prepared profile and
+content-script matches for `file:` URLs. Loopback mode requires content scripts
+to match HTTP on `127.0.0.1`; HTTPS-only or domain-specific scripts may not run.
+The pinned browser's real-browser tests check `isSecureContext` in both modes;
+secure-context status does not remove API-specific scheme or origin restrictions.
+The local CLI continues to accept URLs through `-url`.
 
 ### API authentication
 
@@ -312,15 +362,18 @@ the supplied manifest.
 
 ### Capture parameters and responses
 
-`profile` and absolute HTTP(S) `url` are required. `width` defaults to 800 and
-`height` to 480. Optional `ready_selector` waits for an element in the page;
+`profile` is always required; GET also requires an absolute HTTP(S) `url`.
+`width` defaults to 800 and `height` to 480. Optional `ready_selector` waits for
+an element in the page;
 profile `ready_selector` separately expresses an extension-specific signal. Both
-must succeed when configured. Only GET is accepted; repeated and unknown query
-parameters, credentials in URLs, unsupported schemes and excessive dimensions
+must succeed when configured. GET and POST are accepted on `/capture`; repeated
+and unknown query parameters, credentials in URLs, unsupported schemes and excessive dimensions
 are rejected. URL fragments remain part of the capture URL and cache key.
 
 Errors are JSON with an `error` field and `Cache-Control: no-store`: 400 for input,
-404 for an unknown endpoint, 405 for another method, 502 for browser/navigation,
+404 for an unknown endpoint, 405 for another method, 413 for an oversized HTML
+body, 415 for an unsupported
+HTML media type, charset or content encoding, 502 for browser/navigation,
 HTTP 4xx/5xx from the target or asset failure, 503 for exhausted capacity,
 cancellation or shutdown, and 504 for the capture deadline. Overload responses
 include `Retry-After: 1`. Target URL errors are logged without logging the full
@@ -358,6 +411,7 @@ disables internal caching. Configuration changes require a process restart.
 | `max_width`, `max_height` | 4096 each | Maximum viewport dimensions |
 | `max_pixels` | 8388608 | Additional viewport area bound |
 | `max_profile_bytes` | 536870912 | Maximum template bytes copied per capture |
+| `max_post_bytes` | 1048576 | Maximum HTML POST body bytes (1–134217728) |
 | `max_png_bytes` | 41943040 | Maximum returned/cached PNG size |
 | `profiles` | required | Named immutable descriptors (1–128 profiles) |
 
@@ -369,8 +423,9 @@ Chromium lock/endpoint files, which are excluded. Files in copies are independen
 and writable even when original files are read-only. No hard links, shared work
 profiles, template launches or writes back to the template are used.
 
-Each distinct job has its own deadline and directory. Identical callers share a
-job. Canceling one caller keeps the shared job alive for others; canceling its
+Each distinct job has its own deadline and directory. Identical GET callers
+share a job; every POST creates a separate job. Canceling one GET caller keeps
+the shared job alive for others; canceling its
 last caller terminates it. Successful browsers close normally, then descendants
 are reaped/terminated before scratch is removed. Cleanup has a separate short
 grace period. SIGTERM stops admission/readiness, cancels active/queued captures,
@@ -379,19 +434,25 @@ the example's emptyDir is reclaimed with the pod.
 
 ## Cache semantics
 
-The key contains URL, viewport, both readiness selectors, the complete profile
-descriptor (including revision and browser version), scale factor and renderer
+The GET cache key contains URL, viewport, both readiness
+selectors, the complete profile descriptor (including revision and browser version), scale factor and renderer
 schema. Change `revision` whenever any extension, setting, template data or
 rendering contract changes; changing bundle files without changing revision is
 unsupported. Cache entries use an LRU bounded by PNG bytes and entry count;
 expired entries are removed lazily on requests. Errors are not cached. Oversized
 cache entries can still be returned, up to `max_png_bytes`.
 
-Responses use `Cache-Control: private, max-age=<TTL>, must-revalidate` and an
+GET responses use `Cache-Control: private, max-age=<TTL>, must-revalidate` and an
 `Age` rounded conservatively from the **original generation time**. A hit or 304
 does not reset that time. ETags are quoted SHA-256 hashes of the actual PNG bytes;
-GET supports `If-None-Match`, weak tags, lists and `*`. With TTL zero, responses
+GET supports `If-None-Match`, weak tags, lists and `*`. With TTL zero, GET responses
 use `private, no-cache` and every request revalidates by rendering.
+
+POST always renders a new PNG, even when identical HTML requests arrive
+concurrently. It bypasses the internal cache and request coalescing, while
+sharing the same browser concurrency, queue capacity, deadline and cleanup
+rules. POST responses use `Cache-Control: no-store`, omit ETag/Age, and ignore
+`If-None-Match`.
 
 An expired/missing image is rendered **before** testing `If-None-Match`; the old
 PNG's tag alone never produces 304 after expiry. If a new render produces the
@@ -603,7 +664,8 @@ builder could not execute ARM64 build steps (`exec format error`), so this
 update's multi-platform image build did not complete and ARM64 runtime behavior
 was not verified. No cluster resources were created.
 
-Implemented tests cover exact PNG dimensions, Japanese rendering, a pixel-level
+Implemented tests cover exact PNG dimensions, Japanese rendering, both HTML
+source modes and their secure-context status, a pixel-level
 extension marker, real headed unpacked installation, two independent headless
 clones retaining extension storage without another initial welcome, unrelated
 foreground tabs, immutable templates, cleanup on timeout/navigation error and
@@ -622,7 +684,9 @@ container addressed through private Docker DNS. It checks PNG output, concurrent
 coalescing and cache hits without another capture, Bearer authentication including
 cached/conditional responses and unauthenticated probes, TTL expiry after page changes,
 conditional responses, input/timeout/load errors, scratch cleanup, template
-integrity and normal SIGTERM exit. It does not contact an external page.
+integrity and normal SIGTERM exit. HTML POST tests check the default file mode,
+explicit file/loopback selection, size limits, and generation on every request.
+It does not contact an external page.
 
 The supplied Kubernetes manifest is an example, not evidence of a live cluster
 rollout. Real third-party extensions, native messaging hosts, cross-platform

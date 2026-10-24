@@ -127,6 +127,13 @@ func TestExtensionProfileLifecycle(t *testing.T) {
 	if result, err := chromedp.Run(s.Context, chromedp.Evaluate[string](`window.fixtureError || ''`)); err != nil || result != "" {
 		t.Fatalf("native install: %s: %v", result, err)
 	}
+	// File access is a saved, explicit preparation step, never a runtime edit.
+	if _, err = chromedp.Run(s.Context, chromedp.Evaluate[bool](`(async () => {
+ await chrome.developerPrivate.updateExtensionConfiguration({extensionId:'gkofocaippcmakpnppmdankgpgikcgnb',fileAccess:true});
+ return true;
+})()`, chromedp.EvalAwaitPromise)); err != nil {
+		t.Fatal(err)
+	}
 	// Load the local page in a deliberately new target, just as production does.
 	tab, stop := chromedp.NewContext(s.Context)
 	t.Log("navigating headed target")
@@ -221,6 +228,24 @@ func TestExtensionProfileLifecycle(t *testing.T) {
 	if out := os.Getenv("WEBCAPPI_TEST_ARTIFACTS"); out != "" {
 		if err = os.WriteFile(filepath.Join(out, "extension.png"), image, 0600); err != nil {
 			t.Fatal(err)
+		}
+	}
+	htmlReq := req
+	htmlReq.URL = ""
+	htmlReq.HTML = "<!doctype html><p>Posted HTML with an installed extension</p>"
+	for _, mode := range []string{HTMLModeFile, HTMLModeLoopback} {
+		htmlReq.HTMLMode = mode
+		htmlImage, err := renderer.Capture(ctx, htmlReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		htmlPNG, err := png.Decode(bytes.NewReader(htmlImage))
+		if err != nil {
+			t.Fatal(err)
+		}
+		red, green, blue, _ = htmlPNG.At(799, 20).RGBA()
+		if red>>8 != 20 || green>>8 != 180 || blue>>8 != 60 {
+			t.Fatalf("%s HTML extension marker missing: %d,%d,%d", mode, red>>8, green>>8, blue>>8)
 		}
 	}
 	if before != treeDigest(t, template) {

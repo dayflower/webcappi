@@ -30,12 +30,13 @@ type cached struct {
 	image *Image
 }
 type flight struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	waiters int
-	image   *Image
-	err     error
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	waiters   int
+	image     *Image
+	err       error
+	cacheable bool
 }
 type Service struct {
 	cfg     config.Config
@@ -45,6 +46,7 @@ type Service struct {
 	slots   chan struct{}
 	mu      sync.Mutex
 	closed  bool
+	nextJob uint64
 	flights map[string]*flight
 	cache   map[string]*list.Element
 	lru     *list.List
@@ -72,11 +74,20 @@ func (s *Service) Get(ctx context.Context, req capture.Request) (*Image, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	key := Key(req)
+	cacheable := req.HTML == ""
+	var key string
+	if cacheable {
+		key = Key(req)
+	}
 	s.mu.Lock()
 	if s.closed || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return nil, ErrClosed
+	}
+	if !cacheable {
+		// HTML requests always create independent jobs, even for identical bodies.
+		s.nextJob++
+		key = fmt.Sprintf("html-%d", s.nextJob)
 	}
 	s.expire(time.Now())
 	if e := s.cache[key]; e != nil {
@@ -92,7 +103,7 @@ func (s *Service) Get(ctx context.Context, req capture.Request) (*Image, error) 
 			return nil, ErrBusy
 		}
 		job, cancel := context.WithTimeout(s.ctx, s.cfg.Timeout())
-		f = &flight{ctx: job, cancel: cancel, done: make(chan struct{})}
+		f = &flight{ctx: job, cancel: cancel, done: make(chan struct{}), cacheable: cacheable}
 		s.flights[key] = f
 		s.wg.Add(1)
 		go s.run(key, f, req)
@@ -152,7 +163,7 @@ func (s *Service) finish(key string, f *flight, image *Image, err error) {
 	delete(s.flights, key)
 	f.image = image
 	f.err = err
-	if err == nil && !s.closed && f.ctx.Err() == nil && s.cfg.CacheTTLSeconds > 0 && s.cfg.CacheMaxEntries > 0 && int64(len(image.PNG)) <= s.cfg.CacheMaxBytes {
+	if err == nil && f.cacheable && !s.closed && f.ctx.Err() == nil && s.cfg.CacheTTLSeconds > 0 && s.cfg.CacheMaxEntries > 0 && int64(len(image.PNG)) <= s.cfg.CacheMaxBytes {
 		s.expire(time.Now())
 		for s.lru.Len() >= s.cfg.CacheMaxEntries || s.bytes+int64(len(image.PNG)) > s.cfg.CacheMaxBytes {
 			s.remove(s.lru.Back())

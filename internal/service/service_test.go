@@ -101,6 +101,65 @@ func TestCacheAndCoalescing(t *testing.T) {
 	}
 }
 
+func TestHTMLRequestsAreIndependent(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Concurrency, cfg.QueueSize = 1, 1
+	var calls atomic.Int32
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) ([]byte, error) {
+		calls.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-release:
+			return []byte("png"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	defer s.Close()
+	req := request("")
+	req.HTML = "<p>identical HTML</p>"
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { _, err := s.Get(ctx, req); first <- err }()
+	<-entered
+	second := make(chan error, 1)
+	go func() { _, err := s.Get(t.Context(), req); second <- err }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		n := len(s.flights)
+		s.mu.Unlock()
+		if n == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("identical HTML requests were coalesced")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := s.Get(t.Context(), req); !errors.Is(err, ErrBusy) {
+		t.Fatal("HTML jobs did not respect queue capacity", err)
+	}
+	cancel()
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatal("first HTML request was not canceled", err)
+	}
+	<-entered
+	close(release)
+	if err := <-second; err != nil {
+		t.Fatal("canceling one HTML request affected another", err)
+	}
+	if _, err := s.Get(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 3 || len(s.cache) != 0 || s.bytes != 0 {
+		t.Fatal("HTML results were cached")
+	}
+}
+
 func TestBoundsCancellationAndFailure(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Concurrency = 1
