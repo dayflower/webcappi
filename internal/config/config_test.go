@@ -81,6 +81,60 @@ func TestConfigDecodeAndDefaults(t *testing.T) {
 	}
 }
 
+func TestResizeAlgorithmConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, tc := range []struct {
+		input string
+		want  capture.ResizeAlgorithm
+	}{
+		{`{}`, capture.ResizeBilinear},
+		{`{"resize_algorithm":"bilinear"}`, capture.ResizeBilinear},
+		{`{"resize_algorithm":"catmull_rom"}`, capture.ResizeCatmullRom},
+		{`{"resize_algorithm":"approx_bilinear"}`, capture.ResizeApproxBilinear},
+		{`{"resize_algorithm":"nearest_neighbor"}`, capture.ResizeNearestNeighbor},
+		{`{"resize_algorithm":""}`, ""},
+		{`{"resize_algorithm":"unknown"}`, ""},
+		{`{"resize_algorithm":"BILINEAR"}`, ""},
+		{`{"resize_algorithm":123}`, ""},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.input), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("invalid resize algorithm accepted")
+				}
+			} else if err != nil || cfg.ResizeAlgorithm != tc.want {
+				t.Fatalf("resize_algorithm=%q, error=%v", cfg.ResizeAlgorithm, err)
+			}
+		})
+	}
+}
+
+func TestViewportLimitsCoverDefaultSize(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		pixels        int64
+		valid         bool
+	}{
+		{"exact default", 1280, 720, 1280 * 720, true},
+		{"width too small", 1279, 720, 1280 * 720, false},
+		{"height too small", 1280, 719, 1280 * 720, false},
+		{"area too small", 1280, 720, 1280*720 - 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.MaxWidth, cfg.MaxHeight, cfg.MaxPixels = tc.width, tc.height, tc.pixels
+			if err := cfg.Validate(); (err == nil) != tc.valid {
+				t.Fatalf("default viewport must fit configured limits: %v", err)
+			}
+		})
+	}
+}
+
 func TestProfileCountIncludesAutomaticDefault(t *testing.T) {
 	c := Defaults()
 	c.Profiles = map[string]capture.Profile{}

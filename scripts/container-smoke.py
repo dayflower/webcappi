@@ -65,6 +65,11 @@ def main():
         (data / "token").chmod(0o644)
         cfg["auth"] = {"bearer_token_file": "/run/secrets/webcappi/token"}
         (data / "config.json").write_text(json.dumps(cfg))
+        filters = data / "resize-filters"
+        filters.mkdir()
+        algorithms = ("catmull_rom", "approx_bilinear", "nearest_neighbor")
+        for algorithm in algorithms:
+            (filters / f"{algorithm}.json").write_text(json.dumps(dict(cfg, resize_algorithm=algorithm)))
         created = []
         try:
             docker("network", "create", PREFIX)
@@ -79,7 +84,8 @@ def main():
                    "-v", f"{ROOT / 'testdata/extension'}:/src/testdata/extension:ro",
                    "-v", f"{data / 'bundle.json'}:/template/bundle.json:ro",
                    "-v", f"{data / 'token'}:/run/secrets/webcappi/token:ro",
-                   "-v", f"{data / 'config.json'}:/etc/webcappi/config.json:ro", image)
+                   "-v", f"{data / 'config.json'}:/etc/webcappi/config.json:ro",
+                   "-v", f"{filters}:/etc/webcappi/resize-filters:ro", image)
             created.append(PREFIX + "-api")
             port = docker("port", PREFIX + "-api", "8080/tcp").rsplit(":", 1)[1]
             base = f"http://127.0.0.1:{port}"
@@ -131,7 +137,7 @@ def main():
             status, headers, png = results[0]
             assert all(r[0] == 200 and r[2] == png for r in results)
             assert headers["Content-Type"] == "image/png"
-            assert struct.unpack(">II", png[16:24]) == (800, 480)
+            assert struct.unpack(">II", png[16:24]) == (1280, 720)
             assert get(capture(), headers["ETag"])[0] == 304
             assert get(capture(profile="default"), headers["ETag"])[0] == 304
             assert get(capture(), headers["ETag"], authorization=None)[0] == 401
@@ -155,6 +161,41 @@ def main():
             assert get(capture(ready_selector="#never-ready"))[0] == 504
             assert get(capture(url="http://fixture:8000/missing"))[0] == 502
             assert get(capture(width=99999))[0] == 400
+
+            resized_path = capture(width=1200, height=800, output_width=600, output_height=600)
+            resized_status, resized_headers, resized_png = get(resized_path)
+            assert resized_status == 200, (resized_status, resized_png[:1024])
+            assert struct.unpack(">II", resized_png[16:24]) == (600, 600)
+            assert get(resized_path, resized_headers["ETag"])[0] == 304
+            other_size = get(capture(width=1200, height=800, output_width=600, output_height=400),
+                             resized_headers["ETag"])
+            assert other_size[0] == 200
+            assert struct.unpack(">II", other_size[2][16:24]) == (600, 400)
+            assert other_size[1]["ETag"] != resized_headers["ETag"]
+            assert get(capture(output_width=4096, output_height=4096))[0] == 400
+            (artifacts / "api-resized.png").write_bytes(resized_png)
+
+            resized_html = get("/capture?width=320&height=200&output_width=160&output_height=160",
+                               data=b"<p>resized HTML</p>", content_type="text/html")
+            assert resized_html[0] == 200, (resized_html[0], resized_html[2][:1024])
+            assert struct.unpack(">II", resized_html[2][16:24]) == (160, 160)
+            assert resized_html[1]["Cache-Control"] == "no-store"
+
+            for algorithm in algorithms:
+                docker("exec", PREFIX + "-api", "webcappi", "capture",
+                       "-config", f"/etc/webcappi/resize-filters/{algorithm}.json", "-url", "http://fixture:8000/",
+                       "-width", "1200", "-height", "800", "-output-width", "600",
+                       "-output-height", "600", "-out", "/tmp/cli-resized.png")
+                cli_png = subprocess.run(["docker", "exec", PREFIX + "-api", "cat", "/tmp/cli-resized.png"],
+                                         check=True, capture_output=True).stdout
+                assert struct.unpack(">II", cli_png[16:24]) == (600, 600), algorithm
+
+            docker("exec", PREFIX + "-api", "webcappi", "capture",
+                   "-config", "/etc/webcappi/config.json", "-url", "http://fixture:8000/",
+                   "-out", "/tmp/cli-default.png")
+            cli_default = subprocess.run(["docker", "exec", PREFIX + "-api", "cat", "/tmp/cli-default.png"],
+                                         check=True, capture_output=True).stdout
+            assert struct.unpack(">II", cli_default[16:24]) == (1280, 720)
 
             html_path = "/capture?" + urllib.parse.urlencode(dict(width=320, height=200,
                                                                   ready_selector="#ready"))
@@ -193,7 +234,7 @@ def main():
             assert minimal_status == 200, (minimal_status, minimal_png[:1024])
             assert minimal_headers["Content-Type"] == "image/png"
             assert minimal_headers["Cache-Control"] == "no-store"
-            assert struct.unpack(">II", minimal_png[16:24]) == (800, 480)
+            assert struct.unpack(">II", minimal_png[16:24]) == (1280, 720)
             assert post_html(mode="data")[0] == 400
             assert post_html(body=b"x" * (cfg["max_post_bytes"] + 1))[0] == 413
             assert get(html_path, data=b"{}", content_type="application/json")[0] == 415

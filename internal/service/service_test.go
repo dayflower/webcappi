@@ -108,9 +108,20 @@ func TestCacheAndCoalescing(t *testing.T) {
 	changed = request("http://fixture")
 	changed.Height = 481
 	_, _ = s.Get(t.Context(), changed)
+	changed = request("http://fixture")
+	changed.OutputWidth = 400
+	_, _ = s.Get(t.Context(), changed)
+	changed = request("http://fixture")
+	changed.OutputHeight = 240
+	_, _ = s.Get(t.Context(), changed)
 	_, _ = s.Get(t.Context(), request("http://other-fixture"))
-	if calls.Load() != 7 {
+	if calls.Load() != 9 {
 		t.Fatal("request parameters missing from key")
+	}
+	explicit := request("http://fixture")
+	explicit.OutputWidth, explicit.OutputHeight = explicit.Width, explicit.Height
+	if Key(explicit) != Key(request("http://fixture")) {
+		t.Fatal("explicit default output size must reuse the same cache key")
 	}
 }
 

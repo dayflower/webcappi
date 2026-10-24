@@ -64,7 +64,7 @@ def smoke_automatic(root, image, platform_args, bundles, profile, artifacts, pre
                                                  headers={"Content-Type": "text/html; charset=utf-8"})
                 with urllib.request.urlopen(request, timeout=35) as response:
                     png = response.read()
-                    assert response.status == 200 and struct.unpack(">II", png[16:24]) == (800, 480)
+                    assert response.status == 200 and struct.unpack(">II", png[16:24]) == (1280, 720)
                     (artifacts / "automatic-default.png").write_bytes(png)
             after = sorted(docker("exec", name, "find", template, "-type", "f", "-exec", "sha256sum", "{}", "+").splitlines())
             assert before == after, "automatic template changed during capture"
@@ -174,7 +174,7 @@ def main():
             with urllib.request.urlopen(request, timeout=35) as response:
                 png = response.read()
                 assert response.status == 200 and response.headers["Content-Type"] == "image/png"
-                assert struct.unpack(">II", png[16:24]) == (800, 480)
+                assert struct.unpack(">II", png[16:24]) == (1280, 720)
                 (artifacts / "initialized-profile.png").write_bytes(png)
             after = {p.relative_to(bundles): p.read_bytes() for p in bundles.rglob("*") if p.is_file()}
             assert before == after, "imported template changed during capture"

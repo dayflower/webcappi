@@ -173,7 +173,7 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	if err != nil {
 		return req, errors.New("invalid query encoding")
 	}
-	allowed := map[string]bool{"url": true, "width": true, "height": true, "profile": true, "ready_selector": true, "delay_ms": true}
+	allowed := map[string]bool{"url": true, "width": true, "height": true, "output_width": true, "output_height": true, "profile": true, "ready_selector": true, "delay_ms": true}
 	if r.Method == http.MethodPost {
 		delete(allowed, "url")
 		allowed["html_mode"] = true
@@ -208,8 +208,8 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 			}
 		}
 	}
-	req.Width, req.Height = 800, 480
-	for key, dst := range map[string]*int{"width": &req.Width, "height": &req.Height} {
+	req.Width, req.Height = capture.DefaultViewportWidth, capture.DefaultViewportHeight
+	for key, dst := range map[string]*int{"width": &req.Width, "height": &req.Height, "output_width": &req.OutputWidth, "output_height": &req.OutputHeight} {
 		if values, ok := q[key]; ok {
 			n, e := strconv.Atoi(values[0])
 			if e != nil || n < 1 {
@@ -220,6 +220,10 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	}
 	if req.Width > a.cfg.MaxWidth || req.Height > a.cfg.MaxHeight || int64(req.Width)*int64(req.Height) > a.cfg.MaxPixels {
 		return req, errors.New("viewport exceeds configured limits")
+	}
+	req.OutputWidth, req.OutputHeight = req.OutputSize()
+	if req.OutputWidth > a.cfg.MaxWidth || req.OutputHeight > a.cfg.MaxHeight || int64(req.OutputWidth)*int64(req.OutputHeight) > a.cfg.MaxPixels {
+		return req, errors.New("output exceeds configured limits")
 	}
 	if values, ok := q["delay_ms"]; ok {
 		n, err := strconv.Atoi(values[0])

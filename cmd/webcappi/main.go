@@ -41,8 +41,10 @@ func run(args []string) (err error) {
 	path := fs.String("config", "config.json", "server configuration")
 	profile := fs.String("profile", config.DefaultProfileName, "capture profile name")
 	url := fs.String("url", "", "page URL")
-	width := fs.Int("width", 800, "viewport width")
-	height := fs.Int("height", 480, "viewport height")
+	width := fs.Int("width", capture.DefaultViewportWidth, "viewport width")
+	height := fs.Int("height", capture.DefaultViewportHeight, "viewport height")
+	fs.Int("output-width", 0, "PNG width (defaults to viewport width)")
+	fs.Int("output-height", 0, "PNG height (defaults to viewport height)")
 	out := fs.String("out", "capture.png", "PNG output path")
 	selector := fs.String("ready-selector", "", "page readiness CSS selector")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -73,7 +75,7 @@ func run(args []string) (err error) {
 	if err == nil {
 		err = checkFiles(startup)
 	}
-	renderer := capture.Renderer{Browser: b, WorkDir: c.WorkDir, MaxProfileBytes: c.MaxProfileBytes}
+	renderer := capture.Renderer{Browser: b, WorkDir: c.WorkDir, MaxProfileBytes: c.MaxProfileBytes, ResizeAlgorithm: c.ResizeAlgorithm}
 	if _, provided := c.Profiles[config.DefaultProfileName]; err == nil && !provided {
 		var temporary *capture.TemporaryProfile
 		temporary, err = renderer.NewProfile(startup)
@@ -127,6 +129,14 @@ func run(args []string) (err error) {
 		q.Set("profile", *profile)
 		q.Set("width", fmt.Sprint(*width))
 		q.Set("height", fmt.Sprint(*height))
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "output-width":
+				q.Set("output_width", f.Value.String())
+			case "output-height":
+				q.Set("output_height", f.Value.String())
+			}
+		})
 		q.Set("ready_selector", *selector)
 		req.URL.RawQuery = q.Encode()
 		writer := &fileResponse{header: http.Header{}}

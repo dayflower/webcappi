@@ -36,6 +36,7 @@ type Config struct {
 	MaxWidth              int                        `json:"max_width"`
 	MaxHeight             int                        `json:"max_height"`
 	MaxPixels             int64                      `json:"max_pixels"`
+	ResizeAlgorithm       capture.ResizeAlgorithm    `json:"resize_algorithm"`
 	MaxProfileBytes       int64                      `json:"max_profile_bytes"`
 	MaxPOSTBytes          int64                      `json:"max_post_bytes"`
 	MaxPNGBytes           int64                      `json:"max_png_bytes"`
@@ -47,7 +48,7 @@ type Auth struct {
 }
 
 func Defaults() Config {
-	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, CacheTTLSeconds: 60, CacheMaxBytes: 64 << 20, CacheMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
+	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, CacheTTLSeconds: 60, CacheMaxBytes: 64 << 20, CacheMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, ResizeAlgorithm: capture.ResizeBilinear, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
 }
 
 func Load(path string) (Config, error) {
@@ -77,6 +78,9 @@ func (c Config) Timeout() time.Duration { return time.Duration(c.CaptureTimeoutS
 func (c Config) TTL() time.Duration     { return time.Duration(c.CacheTTLSeconds) * time.Second }
 
 func (c Config) Validate() error {
+	if err := c.ResizeAlgorithm.Validate(); err != nil {
+		return err
+	}
 	if c.Listen == "" || !filepath.IsAbs(c.BrowserPath) || !filepath.IsAbs(c.WorkDir) {
 		return errors.New("listen and absolute browser_path/work_dir are required")
 	}
@@ -95,7 +99,7 @@ func (c Config) Validate() error {
 	if c.MaxPOSTBytes < 1 || c.MaxPOSTBytes > 128<<20 {
 		return errors.New("max_post_bytes must be between 1 and 134217728")
 	}
-	if c.MaxWidth < 800 || c.MaxHeight < 480 || c.MaxWidth > 8192 || c.MaxHeight > 8192 || c.MaxPixels < 800*480 || c.MaxPixels > 32_000_000 {
+	if c.MaxWidth < capture.DefaultViewportWidth || c.MaxHeight < capture.DefaultViewportHeight || c.MaxWidth > 8192 || c.MaxHeight > 8192 || c.MaxPixels < capture.DefaultViewportWidth*capture.DefaultViewportHeight || c.MaxPixels > 32_000_000 {
 		return errors.New("invalid viewport limits")
 	}
 	count := len(c.Profiles)

@@ -1,9 +1,9 @@
 # webcappi
 
-A Go REST server that captures a URL or posted HTML as a viewport-sized PNG using
-a fresh Chromium process and a disposable copy of a browser profile. The first
-release targets **Linux amd64 and arm64**, one replica and an in-process bounded
-PNG cache.
+A Go REST server that captures a URL or posted HTML as a PNG with independent
+viewport and output sizes, using a fresh Chromium process and a disposable copy
+of a browser profile. The first release targets **Linux amd64 and arm64**, one
+replica and an in-process bounded PNG cache.
 Private addresses and cluster Service DNS names are intentionally supported.
 
 ## Browser selection and verified startup behavior
@@ -338,7 +338,8 @@ curl 'http://localhost:8080/capture' \
 POST requires a non-empty UTF-8 HTML body. `max_post_bytes` sets the size limit
 in bytes (default: 1 MiB, or 1,048,576 bytes). JSON, form bodies, other charsets and compressed bodies are
 not accepted. `url` is not accepted on POST. The query parameters `profile`,
-`width`, `height`, `ready_selector` and `delay_ms` work as on GET.
+`width`, `height`, `output_width`, `output_height`, `ready_selector` and `delay_ms`
+work as on GET.
 
 The POST-only query parameter `html_mode` selects how Chromium opens the HTML:
 
@@ -424,7 +425,45 @@ HTML POST requires no query parameters. Omitting `profile` selects the
 `default` profile (configured or generated), as does omitting CLI `-profile`. Specify another configured
 name to select a different profile. An explicitly empty or unknown profile name
 is rejected.
-`width` defaults to 800 and `height` to 480. Optional `ready_selector` waits for
+`width` and `height` set the page's viewport in CSS pixels, defaulting to 1280 and
+720 in both REST and the capture CLI. They control responsive layout and the
+captured visible area, not the full scrollable page. Optional `output_width` and
+`output_height` set the PNG canvas dimensions in pixels; each omitted dimension
+defaults to the corresponding
+viewport dimension. The viewport image is resized proportionally to fill the
+output canvas, then cropped around the center. Different aspect ratios remove
+equal portions from the left/right or top/bottom, without stretching or adding
+padding. Scaling can enlarge or shrink the image, using bilinear filtering from
+`golang.org/x/image/draw` after capture by default. Set the server configuration
+`resize_algorithm` to `bilinear`, `catmull_rom`, `approx_bilinear` or
+`nearest_neighbor`. `catmull_rom` uses bicubic filtering; `approx_bilinear` uses
+bilinear interpolation when enlarging and a faster approximation when shrinking;
+`nearest_neighbor` selects the closest source pixel without blending colors.
+This setting applies to GET, HTML POST and
+the local capture CLI. It requires a process restart, which clears the internal
+cache; callers cannot override the algorithm per request.
+Browser device scale remains fixed at 1; resizing does not reflow the page or
+render at a higher device pixel ratio. With matching viewport/output sizes,
+the original screenshot is returned without re-encoding.
+
+For example, `&width=1200&height=800&output_width=600&output_height=600` lays out
+the page at 1200 x 800, scales its image to 900 x 600, and removes 150 pixels
+from each side to return a 600 x 600 PNG. The CLI equivalents are `-width`,
+`-height`, `-output-width` and `-output-height`:
+
+```sh
+webcappi capture -config config.json -url http://example.internal/ \
+  -width 1200 -height 800 -output-width 600 -output-height 600 -out capture.png
+```
+
+All four dimensions must be positive integers. Viewport and output dimensions
+are independently checked against the same `max_width`, `max_height` and
+`max_pixels` limits. Explicitly empty, zero, negative, fractional, repeated or
+oversized values are rejected with HTTP 400.
+Configuration limits must accommodate the default viewport: `max_width` must
+be at least 1280, `max_height` at least 720 and `max_pixels` at least 921600.
+
+Optional `ready_selector` waits for
 an element in the page;
 profile `ready_selectors` lists readiness signals, for example one per extension:
 
@@ -494,8 +533,9 @@ disables internal caching. Configuration changes require a process restart.
 | `cache_ttl_seconds` | 60 | Fixed freshness lifetime from generation (0–86400) |
 | `cache_max_bytes` | 67108864 | LRU PNG byte capacity |
 | `cache_max_entries` | 128 | Additional cache metadata/entry bound |
-| `max_width`, `max_height` | 4096 each | Maximum viewport dimensions |
-| `max_pixels` | 8388608 | Additional viewport area bound |
+| `max_width`, `max_height` | 4096 each | Maximum viewport and output dimensions, checked independently |
+| `max_pixels` | 8388608 | Maximum area of each viewport and output canvas |
+| `resize_algorithm` | `bilinear` | Resize filter: `bilinear`, `catmull_rom`, `approx_bilinear` or `nearest_neighbor`; center cropping is preserved |
 | `max_profile_bytes` | 536870912 | Maximum template bytes copied during initialization or per capture |
 | `max_post_bytes` | 1048576 | Maximum HTML POST body bytes (1–134217728) |
 | `max_png_bytes` | 41943040 | Maximum returned/cached PNG size |
@@ -527,9 +567,11 @@ the example's emptyDir is reclaimed with the pod.
 
 ## Cache semantics
 
-The GET cache key contains URL, viewport, the request's `ready_selector` and
-`delay_ms`, profile name, scale factor and renderer schema. Profile settings and
-bundle contents are not part of the key. Changes under the same profile name can reuse existing
+The GET cache key contains URL, viewport, output dimensions, the request's
+`ready_selector` and `delay_ms`, profile name, scale factor and renderer schema. Omitted output
+dimensions and explicit values equal to the viewport share a cache key.
+Profile settings and bundle contents are not part of the key.
+Changes under the same profile name can reuse existing
 entries until TTL expiry or a process restart discards the internal cache.
 Cache entries use an LRU bounded by PNG bytes and entry count; expired entries
 are removed lazily on requests. Errors are not cached. Oversized cache entries
@@ -773,6 +815,19 @@ readiness after template loss, and cleanup on SIGTERM and `check` exit. Cleanup 
 checked while the container and its scratch volume remain alive. Both CLI
 architectures build; the current builder's ARM64 execution limitation described
 above still prevents multi-platform image and ARM64 runtime verification.
+
+Independent viewport/output sizes passed Go 1.26.10 race tests and vet, the amd64
+image build, real-browser tests and container smoke tests, including REST, HTML
+POST and CLI resizing. Pixel checks verify unchanged responsive layout and
+proportional center cropping; unit tests cover both crop axes, up/downscaling,
+extreme aspect ratios, validation and cache separation. All four resize filters
+passed these checks. Container smoke tests exercise the default bilinear API
+filter and explicit Catmull-Rom, approximate bilinear and nearest-neighbor CLI
+configurations. GET, HTML POST and CLI smoke tests also verify the 1280 x 720
+default dimensions. CLI binaries for both architectures built successfully, and ELF
+inspection confirmed their architectures. The multi-platform image build
+failed at ARM64 execution with `exec format error`; ARM64 runtime behavior was
+not verified.
 
 Implemented tests cover exact PNG dimensions, Japanese rendering, both HTML
 source modes and their secure-context status, a pixel-level

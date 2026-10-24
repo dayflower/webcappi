@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -38,6 +39,54 @@ func get(api *API, path, etag string) *httptest.ResponseRecorder {
 }
 
 const valid = "/capture?profile=alternate&url=http%3A%2F%2Ffixture%2F"
+
+func TestCaptureOutputSizeQuery(t *testing.T) {
+	var calls atomic.Int32
+	api, _ := setup(t, func(_ context.Context, req capture.Request) ([]byte, error) {
+		calls.Add(1)
+		return fmt.Appendf(nil, "%dx%d/%dx%d", req.Width, req.Height, req.OutputWidth, req.OutputHeight), nil
+	})
+	for _, tc := range []struct{ query, want string }{
+		{"", "1280x720/1280x720"},
+		{"&output_width=1280&output_height=720", "1280x720/1280x720"},
+		{"&width=800", "800x720/800x720"},
+		{"&height=480", "1280x480/1280x480"},
+		{"&width=1200&height=800&output_width=600&output_height=400", "1200x800/600x400"},
+		{"&width=1200&height=800&output_width=400&output_height=400", "1200x800/400x400"},
+		{"&width=1200&height=800&output_width=400", "1200x800/400x800"},
+		{"&width=1200&height=800&output_height=400", "1200x800/1200x400"},
+		{"&width=1&height=1&output_width=4096&output_height=2048", "1x1/4096x2048"},
+	} {
+		w := get(api, valid+tc.query, "")
+		if w.Code != 200 || w.Body.String() != tc.want {
+			t.Fatalf("GET %s: %d %s", tc.query, w.Code, w.Body)
+		}
+	}
+	if calls.Load() != 8 {
+		t.Fatalf("explicit defaults did not share the cache: %d renders", calls.Load())
+	}
+	w := post(api, "/capture?width=1200&height=800&output_width=600&output_height=600", "<p>hello</p>", "text/html", "")
+	if w.Code != 200 || w.Body.String() != "1200x800/600x600" {
+		t.Fatalf("POST output size: %d %s", w.Code, w.Body)
+	}
+	for _, query := range []string{
+		"output_width=", "output_height=", "output_width=0", "output_height=-1",
+		"output_width=1.5", "output_height=NaN", "output_width=99999999999999999999999",
+		"output_width=1&output_width=2", "output_height=1&output_height=2",
+		"output_width=4097", "output_height=4097", "output_width=4096&output_height=4096",
+		"width=4096&height=4096&output_width=100&output_height=100",
+	} {
+		if w := get(api, valid+"&"+query, ""); w.Code != 400 {
+			t.Fatalf("GET %s: %d %s", query, w.Code, w.Body)
+		}
+		if w := post(api, "/capture?"+query, "<p>hello</p>", "text/html", ""); w.Code != 400 {
+			t.Fatalf("POST %s: %d %s", query, w.Code, w.Body)
+		}
+	}
+	if calls.Load() != 9 {
+		t.Fatal("invalid dimensions reached the renderer")
+	}
+}
 
 func TestCaptureDelayQuery(t *testing.T) {
 	var calls atomic.Int32
@@ -95,7 +144,7 @@ func TestDefaultProfileSelection(t *testing.T) {
 		} else if req.ProfileName != "default" {
 			t.Errorf("unexpected profile name: %q", req.ProfileName)
 		}
-		if req.Profile.ProfileDirectory != wantDirectory || req.Width != 800 || req.Height != 480 {
+		if req.Profile.ProfileDirectory != wantDirectory || req.Width != 1280 || req.Height != 720 {
 			t.Errorf("unexpected profile or viewport: %+v", req)
 		}
 		return []byte(req.ProfileName), nil

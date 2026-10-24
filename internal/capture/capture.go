@@ -14,6 +14,11 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+const (
+	DefaultViewportWidth  = 1280
+	DefaultViewportHeight = 720
+)
+
 type Profile struct {
 	UserDataDir      string   `json:"user_data_dir"`
 	ProfileDirectory string   `json:"profile_directory"`
@@ -27,16 +32,31 @@ type Request struct {
 	HTMLMode      string
 	Width         int
 	Height        int
+	OutputWidth   int
+	OutputHeight  int
 	ProfileName   string
 	Profile       Profile
 	ReadySelector string
 	DelayMS       int
 }
 
+// OutputSize defaults each omitted output dimension to its viewport dimension.
+func (r Request) OutputSize() (int, int) {
+	w, h := r.OutputWidth, r.OutputHeight
+	if w == 0 {
+		w = r.Width
+	}
+	if h == 0 {
+		h = r.Height
+	}
+	return w, h
+}
+
 type Renderer struct {
 	Browser         Browser
 	WorkDir         string
 	MaxProfileBytes int64
+	ResizeAlgorithm ResizeAlgorithm
 }
 
 // Check starts a browser on a disposable clone without contacting a website.
@@ -171,7 +191,19 @@ func (r Renderer) Capture(ctx context.Context, req Request) (png []byte, err err
 			return nil, tab.Err()
 		}
 	}
-	return chromedp.Run(tab, chromedp.CaptureScreenshot())
+	png, err = chromedp.Run(tab, chromedp.CaptureScreenshot())
+	if err != nil {
+		return nil, err
+	}
+	w, h := req.OutputSize()
+	if w == req.Width && h == req.Height {
+		return png, nil
+	}
+	algorithm := r.ResizeAlgorithm
+	if algorithm == "" {
+		algorithm = ResizeBilinear
+	}
+	return resizePNG(ctx, png, w, h, algorithm)
 }
 
 const assetsReady = `(async () => {

@@ -61,19 +61,24 @@ func New(parent context.Context, cfg config.Config, render RenderFunc) *Service 
 
 func Key(req capture.Request) string {
 	// URL captures identify a profile by name for caching and coalescing.
+	outputWidth, outputHeight := req.OutputSize()
 	b, _ := json.Marshal(struct {
 		Schema        string
 		URL           string
 		Width         int
 		Height        int
+		OutputWidth   int
+		OutputHeight  int
 		ProfileName   string
 		ReadySelector string
 		DelayMS       int
 	}{
-		Schema:        "viewport-png-v1-dsf1",
+		Schema:        "viewport-png-v2-dsf1-cover-center",
 		URL:           req.URL,
 		Width:         req.Width,
 		Height:        req.Height,
+		OutputWidth:   outputWidth,
+		OutputHeight:  outputHeight,
 		ProfileName:   req.ProfileName,
 		ReadySelector: req.ReadySelector,
 		DelayMS:       req.DelayMS,
