@@ -209,7 +209,7 @@ func TestExtensionProfileLifecycle(t *testing.T) {
 	work := filepath.Join(root, "work")
 	os.Mkdir(work, 0700)
 	renderer := Renderer{Browser: b, WorkDir: work, MaxProfileBytes: 512 << 20}
-	req := Request{URL: page.URL, Width: 800, Height: 480, Profile: Profile{UserDataDir: template, ProfileDirectory: "Default", Extensions: []string{extension}, ReadySelector: "#webcappi-extension-ready"}}
+	req := Request{URL: page.URL, Width: 800, Height: 480, Profile: Profile{UserDataDir: template, ProfileDirectory: "Default", Extensions: []string{extension}, ReadySelectors: []string{"#webcappi-extension-ready"}}}
 	image, err := renderer.Capture(ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func TestExtensionProfileLifecycle(t *testing.T) {
 		t.Fatalf("work directory leaked: %v", entries)
 	}
 	// A missing readiness selector exercises timeout, process cleanup and deletion.
-	req.Profile.ReadySelector = "#never-ready"
+	req.Profile.ReadySelectors = []string{"#never-ready"}
 	short, stopShort := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	_, err = renderer.Capture(short, req)
 	stopShort()
@@ -267,7 +267,7 @@ func TestExtensionProfileLifecycle(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatal("timeout leaked working files")
 	}
-	req.Profile.ReadySelector = ""
+	req.Profile.ReadySelectors = nil
 	req.URL = "http://127.0.0.1:1/"
 	_, err = renderer.Capture(ctx, req)
 	if err == nil {

@@ -19,7 +19,7 @@ type Profile struct {
 	UserDataDir      string   `json:"user_data_dir"`
 	ProfileDirectory string   `json:"profile_directory"`
 	Extensions       []string `json:"extensions"`
-	ReadySelector    string   `json:"ready_selector,omitempty"`
+	ReadySelectors   []string `json:"ready_selectors,omitempty"`
 }
 
 type Request struct {
@@ -144,12 +144,13 @@ func (r Renderer) Capture(ctx context.Context, req Request) (png []byte, err err
 	if response != nil && response.Status >= 400 {
 		return nil, fmt.Errorf("page returned HTTP %d", response.Status)
 	}
-	for _, selector := range []string{req.ReadySelector, req.Profile.ReadySelector} {
-		if selector == "" {
-			continue
-		}
-		encoded, _ := json.Marshal(selector)
-		if _, err = chromedp.Run(tab, chromedp.Poll[bool]("!!document.querySelector("+string(encoded)+")", chromedp.WithPollingInterval(50_000_000))); err != nil {
+	selectors := append([]string{}, req.Profile.ReadySelectors...)
+	if req.ReadySelector != "" {
+		selectors = append(selectors, req.ReadySelector)
+	}
+	if len(selectors) > 0 {
+		encoded, _ := json.Marshal(selectors)
+		if _, err = chromedp.Run(tab, chromedp.Poll[bool](string(encoded)+".every(selector => !!document.querySelector(selector))", chromedp.WithPollingInterval(50_000_000))); err != nil {
 			return nil, fmt.Errorf("ready selector: %w", err)
 		}
 	}

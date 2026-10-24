@@ -3,6 +3,7 @@ package capture
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -25,6 +26,71 @@ func TestHTMLCapture(t *testing.T) {
 			name = "default-file"
 		}
 		t.Run(name, func(t *testing.T) { testHTMLCapture(t, b, mode) })
+	}
+}
+
+func TestProfileReadySelectors(t *testing.T) {
+	b := fixtureBrowser(t)
+	template := t.TempDir()
+	work := t.TempDir()
+	renderer := Renderer{Browser: b, WorkDir: work, MaxProfileBytes: 512 << 20}
+	for _, tc := range []struct {
+		name      string
+		selectors []string
+		timeout   bool
+	}{
+		{"all signals", []string{"#first-ready", "#last-ready"}, false},
+		{"reversed order", []string{"#last-ready", "#first-ready"}, false},
+		{"missing signal", []string{"#first-ready", "#never-ready"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := Request{
+				HTML: `<!doctype html><style>body{background:rgb(255,0,0)}</style>
+<body><script>
+const signal = id => {
+ const el = document.createElement('div'); el.id = id; el.hidden = true;
+ document.body.append(el);
+};
+signal('first-ready');
+signal('request-ready');
+setTimeout(() => {
+ document.getElementById('first-ready').remove(); signal('last-ready');
+}, 200);
+setTimeout(() => {
+ document.body.style.background = 'rgb(20,180,60)';
+ signal('first-ready');
+}, 500);
+</script>`,
+				Width: 100, Height: 100,
+				Profile: Profile{
+					UserDataDir: template, ProfileDirectory: "Default",
+					ReadySelectors: tc.selectors,
+				},
+				ReadySelector: "#request-ready",
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+			defer cancel()
+			data, err := renderer.Capture(ctx, req)
+			if tc.timeout {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("missing profile signal did not time out: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				img, err := png.Decode(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := color.RGBAModel.Convert(img.At(50, 50)); got != (color.RGBA{20, 180, 60, 255}) {
+					t.Fatalf("captured before all readiness signals: %v", got)
+				}
+			}
+			if entries, err := os.ReadDir(work); err != nil || len(entries) != 0 {
+				t.Fatalf("readiness capture leaked working files: %v, %v", entries, err)
+			}
+		})
 	}
 }
 

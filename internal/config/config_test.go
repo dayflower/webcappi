@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -163,4 +164,72 @@ func TestMaxPOSTBytesConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProfileReadySelectorsConfig(t *testing.T) {
+	input, err := os.ReadFile("../../config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(input, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	maximum := make([]string, 64)
+	for i := range maximum {
+		maximum[i] = "#ready"
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	for _, tc := range []struct {
+		name      string
+		selectors []string
+		ok        bool
+	}{
+		{"omitted", nil, true},
+		{"multiple", []string{"#extension-a-ready", "#extension-b-ready"}, true},
+		{"maximum count", maximum, true},
+		{"too many", append(append([]string{}, maximum...), "#extra"), false},
+		{"maximum length", []string{strings.Repeat("a", 1024)}, true},
+		{"too long", []string{strings.Repeat("a", 1025)}, false},
+		{"empty entry", []string{"#ready", ""}, false},
+		{"whitespace entry", []string{" \t\n"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := cfg.Profiles["reader"]
+			profile.ReadySelectors = tc.selectors
+			cfg.Profiles["reader"] = profile
+			data, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := Load(path)
+			if (err == nil) != tc.ok {
+				t.Fatalf("unexpected validation result: %v", err)
+			}
+			if err == nil && !reflect.DeepEqual(loaded.Profiles["reader"], profile) {
+				t.Fatal("profile readiness settings not preserved")
+			}
+		})
+	}
+	t.Run("removed singular field", func(t *testing.T) {
+		var document map[string]any
+		if err := json.Unmarshal(input, &document); err != nil {
+			t.Fatal(err)
+		}
+		profiles := document["profiles"].(map[string]any)
+		profiles["reader"].(map[string]any)["ready_selector"] = "#obsolete-ready"
+		data, err := json.Marshal(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), `unknown field "ready_selector"`) {
+			t.Fatalf("removed profile field was not rejected: %v", err)
+		}
+	})
 }

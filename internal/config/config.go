@@ -105,8 +105,13 @@ func (c Config) Validate() error {
 		if !filepath.IsAbs(p.UserDataDir) || within(p.UserDataDir, c.WorkDir) || within(c.WorkDir, p.UserDataDir) {
 			return fmt.Errorf("profile %s: absolute user_data_dir must be separate from work_dir", name)
 		}
-		if len(p.ReadySelector) > 1024 {
-			return fmt.Errorf("profile %s: ready_selector too long", name)
+		if len(p.ReadySelectors) > 64 {
+			return fmt.Errorf("profile %s: ready_selectors must contain at most 64 selectors", name)
+		}
+		for _, selector := range p.ReadySelectors {
+			if strings.TrimSpace(selector) == "" || len(selector) > 1024 {
+				return fmt.Errorf("profile %s: ready_selectors entries must be non-empty and <=1024 bytes", name)
+			}
 		}
 		for _, ext := range p.Extensions {
 			if !filepath.IsAbs(ext) || strings.Contains(ext, ",") || within(ext, p.UserDataDir) || within(p.UserDataDir, ext) || within(ext, c.WorkDir) || within(c.WorkDir, ext) {

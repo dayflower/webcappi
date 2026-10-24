@@ -51,7 +51,7 @@ cat > "$destination/bundle.json" <<'JSON'
   "user_data_dir": "/bundles/reader/user-data",
   "profile_directory": "Default",
   "extensions": ["/bundles/reader/extensions/verification"],
-  "ready_selector": "#webcappi-extension-ready"
+  "ready_selectors": ["#webcappi-extension-ready"]
 }
 JSON
 echo "Prepared $destination. Keep bundle.json, extensions and user-data together."

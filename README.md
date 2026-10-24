@@ -365,8 +365,22 @@ the supplied manifest.
 `profile` is always required; GET also requires an absolute HTTP(S) `url`.
 `width` defaults to 800 and `height` to 480. Optional `ready_selector` waits for
 an element in the page;
-profile `ready_selector` separately expresses an extension-specific signal. Both
-must succeed when configured. GET and POST are accepted on `/capture`; repeated
+profile `ready_selectors` lists readiness signals, for example one per extension:
+
+```json
+"ready_selectors": ["#extension-a-ready", "#extension-b-ready"]
+```
+
+All configured selectors, including the request's `ready_selector`, must match
+an element in the capture document in the same polling check before capture
+continues. Elements may be hidden. The page or extensions must create these
+signals; entries are not automatically associated with extension paths or IDs.
+The optional array accepts at most 64 non-empty selectors, each up to 1024 bytes.
+Omit `ready_selectors` or use an empty array to skip profile-specific readiness.
+Keep the profile descriptor in `bundle.json` identical to the configuration when
+changing these settings. The HTTP query parameter remains `ready_selector`.
+
+GET and POST are accepted on `/capture`; repeated
 and unknown query parameters, credentials in URLs, unsupported schemes and excessive dimensions
 are rejected. URL fragments remain part of the capture URL and cache key.
 
@@ -416,7 +430,7 @@ disables internal caching. Configuration changes require a process restart.
 | `profiles` | required | Named immutable descriptors (1–128 profiles) |
 
 Profile fields are `revision`, `browser_version`, `user_data_dir`,
-`profile_directory`, `extensions`, and optional `ready_selector`.
+`profile_directory`, `extensions`, and optional `ready_selectors`.
 `user_data_dir` must have a sibling `bundle.json`. Scratch and templates cannot
 overlap; copies reject special files and symlinks except obsolete top-level
 Chromium lock/endpoint files, which are excluded. Files in copies are independent

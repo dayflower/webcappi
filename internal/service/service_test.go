@@ -96,7 +96,10 @@ func TestCacheAndCoalescing(t *testing.T) {
 	changed = request("http://fixture")
 	changed.Width = 801
 	_, _ = s.Get(t.Context(), changed)
-	if calls.Load() != 5 {
+	changed = request("http://fixture")
+	changed.Profile.ReadySelectors = []string{"#extension-a-ready", "#extension-b-ready"}
+	_, _ = s.Get(t.Context(), changed)
+	if calls.Load() != 6 {
 		t.Fatal("render inputs missing from key")
 	}
 }

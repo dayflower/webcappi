@@ -52,7 +52,7 @@ def main():
         profile = dict(revision="smoke-1", browser_version="156.0.8078.47",
                        user_data_dir="/template/user-data", profile_directory="Default",
                        extensions=["/src/testdata/extension"],
-                       ready_selector="#webcappi-extension-ready")
+                       ready_selectors=["#webcappi-extension-ready", "html"])
         (data / "bundle.json").write_text(json.dumps(profile))
         # This exception is confined to disposable tests on this host. Production
         # examples preserve the sandbox unless explicitly configured otherwise.
