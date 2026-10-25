@@ -6,6 +6,7 @@
 *.test.exe
 /coverage.out
 /coverage.html
+__pycache__/
 
 # Local runtime settings and captured output.
 /config.json
