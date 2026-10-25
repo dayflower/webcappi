@@ -71,7 +71,7 @@ func TestSourceRevalidationPreservesServiceResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored := api.metadata.get(service.Key(req))
+	stored := api.metadata.(*metadataCache).get(service.Key(req))
 	if stored.source.Headers.Get("ETag") != "source-v2" || stored.source.Headers.Get("Last-Modified") == "" || stored.source.Headers.Get("Date") != "" || stored.source.Headers.Get("Age") != "" {
 		t.Fatal("source 304 header merge lost validators or retained old age", stored.source.Headers)
 	}
@@ -223,7 +223,7 @@ func TestMetadataPolicies(t *testing.T) {
 			if second.Code != 304 || calls.Load() != tc.wantCalls {
 				t.Fatal("conditional capture count", second.Code, calls.Load())
 			}
-			if tc.control == "no-store" && len(api.metadata.entries) != 0 {
+			if tc.control == "no-store" && len(api.metadata.(*metadataCache).entries) != 0 {
 				t.Fatal("no-store metadata retained")
 			}
 			if tc.name == "fallback" {
@@ -255,11 +255,11 @@ func TestNoStoreRemovesPreviousMetadata(t *testing.T) {
 	api := New(cfg, s, nil)
 	const path = "/capture?url=http://fixture/"
 	first := get(api, path, "")
-	if first.Code != 200 || len(api.metadata.entries) != 1 {
+	if first.Code != 200 || len(api.metadata.(*metadataCache).entries) != 1 {
 		t.Fatal("initial GET did not populate metadata", first)
 	}
 	second := get(api, path, "")
-	if second.Code != 200 || second.Header().Get("Cache-Control") != "private, no-store" || second.Header().Get("Age") != "" || len(api.metadata.entries) != 0 {
+	if second.Code != 200 || second.Header().Get("Cache-Control") != "private, no-store" || second.Header().Get("Age") != "" || len(api.metadata.(*metadataCache).entries) != 0 {
 		t.Fatal("no-store GET retained previous metadata", second)
 	}
 	if response := get(api, path, first.Header().Get("ETag")); response.Code != 304 || calls != 3 {
@@ -274,7 +274,7 @@ func TestUnexpectedSourceNotModified(t *testing.T) {
 		return &service.Image{NotModified: true}, nil
 	}), nil)
 	response := get(api, "/capture?url=http://fixture/", "*")
-	if response.Code != 502 || response.Body.String() != "{\"error\":\"unexpected source validation response\"}\n" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" || len(api.metadata.entries) != 0 {
+	if response.Code != 502 || response.Body.String() != "{\"error\":\"unexpected source validation response\"}\n" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" || len(api.metadata.(*metadataCache).entries) != 0 {
 		t.Fatal("unexpected source 304 was accepted", response)
 	}
 }

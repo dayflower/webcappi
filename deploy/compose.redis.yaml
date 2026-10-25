@@ -1,0 +1,26 @@
+services:
+  api:
+    image: webcappi:dev
+    build:
+      context: ..
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    shm_size: 512m
+    tmpfs:
+      - /work:uid=10001,gid=10001,mode=700
+      - /tmp
+    volumes:
+      - ./config.redis.example.json:/etc/webcappi/config.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+  redis:
+    image: redis:8.2.2-alpine
+    command: [redis-server, --save, "", --appendonly, "no", --maxmemory, 64mb, --maxmemory-policy, noeviction]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+    mem_limit: 128m

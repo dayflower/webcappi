@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"container/list"
+	"context"
 	"math"
 	"net/http"
 	"strconv"
@@ -14,13 +15,14 @@ import (
 // metadata deliberately contains no image bytes. Expired entries can supply
 // source validators, but cannot produce a 304 without checking the source.
 type metadata struct {
-	key       string
-	etag      string
-	source    *capture.SourceResponse
-	validated time.Time
-	policy    responsePolicy
-	order     uint64
-	bytes     int64
+	key          string
+	etag         string
+	source       *capture.SourceResponse
+	validated    time.Time
+	policy       responsePolicy
+	order        uint64
+	bytes        int64
+	responseTime time.Time
 }
 
 func (m *metadata) expires() time.Time {
@@ -34,11 +36,59 @@ type metadataCache struct {
 	bytes      int64
 	maxBytes   int64
 	maxEntries int
+	next       uint64
+	active     map[string]*metadataFence
+}
+
+type metadataFence struct {
+	order uint64
+	count int
 }
 
 func newMetadataCache(entries int, bytes int64) *metadataCache {
-	return &metadataCache{entries: make(map[string]*list.Element), lru: list.New(), maxEntries: entries, maxBytes: bytes}
+	return &metadataCache{entries: make(map[string]*list.Element), lru: list.New(), maxEntries: entries, maxBytes: bytes, active: make(map[string]*metadataFence)}
 }
+
+func (c *metadataCache) begin(_ context.Context, key string, now time.Time) (metadataSnapshot, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.next++
+	f := c.active[key]
+	if f == nil {
+		f = &metadataFence{}
+		c.active[key] = f
+	}
+	f.count++
+	s := metadataSnapshot{key: key, order: c.next, now: now}
+	if e := c.entries[key]; e != nil {
+		c.lru.MoveToFront(e)
+		s.previous = e.Value.(*metadata)
+	}
+	return s, nil
+}
+
+func (c *metadataCache) commit(_ context.Context, s metadataSnapshot, value *metadata) (time.Time, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if f := c.active[s.key]; f != nil && f.order <= s.order {
+		c.putLocked(value)
+		f.order = s.order
+	}
+	return value.validated, nil
+}
+
+func (c *metadataCache) finish(s metadataSnapshot) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if f := c.active[s.key]; f != nil {
+		f.count--
+		if f.count == 0 {
+			delete(c.active, s.key)
+		}
+	}
+}
+func (c *metadataCache) check(context.Context) error { return nil }
+func (c *metadataCache) close() error                { return nil }
 
 func (c *metadataCache) get(key string) *metadata {
 	c.mu.Lock()
@@ -52,10 +102,14 @@ func (c *metadataCache) get(key string) *metadata {
 }
 
 func (c *metadataCache) put(value *metadata) {
-	// Keep only response metadata used for freshness and conditional navigation.
-	value = cloneMetadata(value)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.putLocked(value)
+}
+
+func (c *metadataCache) putLocked(value *metadata) {
+	// Keep only response metadata used for freshness and conditional navigation.
+	value = cloneMetadata(value)
 	if old := c.entries[value.key]; old != nil {
 		if old.Value.(*metadata).order > value.order {
 			return

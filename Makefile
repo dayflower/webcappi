@@ -5,7 +5,7 @@ IMAGE ?= webcappi:dev
 PLATFORM ?=
 PLATFORMS ?= linux/amd64,linux/arm64
 
-.PHONY: build test image image-multi binaries browser-test
+.PHONY: build test image image-multi binaries browser-test redis-test
 .PHONY: format-check format-check-go format-check-python format format-go format-python
 .PHONY: lint lint-go lint-python
 build:
@@ -57,3 +57,6 @@ binaries:
 
 browser-test:
 	bash scripts/browser-test.sh
+
+redis-test:
+	GO="$(GO)" bash scripts/redis-test.sh

@@ -1,0 +1,11 @@
+{
+  "work_dir": "/work/captures",
+  "cache": {
+    "backend": "redis",
+    "redis": {
+      "address": "redis:6379",
+      "namespace": "webcappi-docker",
+      "generation": "capture-v1"
+    }
+  }
+}

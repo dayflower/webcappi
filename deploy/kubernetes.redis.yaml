@@ -1,0 +1,109 @@
+# Provision an authenticated Redis primary Service named redis separately.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webcappi-config
+data:
+  config.json: |
+    {
+      "listen": ":8080",
+      "auth": {
+        "bearer_token_file": "/run/secrets/webcappi/token"
+      },
+      "browser_path": "/opt/chrome/chrome",
+      "no_sandbox": false,
+      "work_dir": "/work/captures",
+      "cache": {
+        "backend": "redis",
+        "redis": {
+          "address": "redis:6379",
+          "namespace": "webcappi-production",
+          "generation": "capture-v1",
+          "password_file": "/run/secrets/redis/password"
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webcappi
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: webcappi}
+  template:
+    metadata:
+      labels: {app: webcappi}
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: webcappi:dev
+          args: ["webcappi", "serve", "-config", "/etc/webcappi/config.json"]
+          ports:
+            - {name: http, containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 500m, memory: 512Mi, ephemeral-storage: 1Gi}
+            limits: {cpu: "2", memory: 2Gi, ephemeral-storage: 4Gi}
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: config, mountPath: /etc/webcappi, readOnly: true}
+            - {name: api-token, mountPath: /run/secrets/webcappi, readOnly: true}
+            - {name: redis-password, mountPath: /run/secrets/redis, readOnly: true}
+            - {name: work, mountPath: /work}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: config
+          configMap: {name: webcappi-config}
+        - name: api-token
+          secret:
+            secretName: webcappi-auth
+            defaultMode: 0440
+            items:
+              - {key: token, path: token}
+        - name: redis-password
+          secret:
+            secretName: webcappi-redis
+            defaultMode: 0440
+            items:
+              - {key: password, path: password}
+        - name: work
+          emptyDir: {sizeLimit: 2Gi}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webcappi
+spec:
+  type: ClusterIP
+  selector: {app: webcappi}
+  ports:
+    - {name: http, port: 8080, targetPort: http}

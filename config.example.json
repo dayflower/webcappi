@@ -6,6 +6,9 @@
   "browser_path": "/opt/chrome/chrome",
   "no_sandbox": false,
   "work_dir": "/work/captures",
+  "cache": {
+    "backend": "memory"
+  },
   "concurrency": 1,
   "queue_size": 8,
   "max_requests": 64,

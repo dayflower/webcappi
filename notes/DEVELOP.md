@@ -8,7 +8,8 @@ measurements are in [BROWSER.md](BROWSER.md).
 ## Toolchain and local build
 
 Use the Go toolchain pinned in [Dockerfile](../Dockerfile): **Go 1.26.10**.
-The module minimum is Go 1.25.0. The browser is full Chrome for Testing
+The module minimum is Go 1.26.0 (required by go-redis v9.23.0). The browser is
+full Chrome for Testing
 **156.0.8078.47** on both Linux amd64 and arm64; chromedp is **v0.21.0**.
 Docker with Buildx is needed for image/browser checks, and Python 3 for smoke
 tests. Host Go compilation is needed by the browser-test script even when the
@@ -183,23 +184,71 @@ and metadata capacity bounded.
 
 ## Metadata update invariants
 
-The existing LRU stores only validation metadata. Do not add PNG retention or
-coalesce independent captures. Keys include URL, viewport/output dimensions,
-profile name, request selector and delay, plus fixed renderer attributes.
-Omitted and explicit viewport-sized outputs share a key.
+The selected memory/Redis store retains only validation metadata. Do not add
+PNG retention or coalesce independent captures. Keys include URL,
+viewport/output dimensions, profile name, request selector and delay, plus fixed
+renderer attributes. Omitted and explicit viewport-sized outputs share a key.
 
-Allocate the metadata request-order number after admission and POST body work,
-before conditional lookup or a service call. Later completion of an older
-request must not replace a newer stored result. A newer `no-store` result removes
-the previous entry. Source 304 processing merges policy/validators, clears old
+Allocate a metadata update fence after admission and POST body work, before
+conditional lookup or a service call. Memory uses a process-local order and
+bounded in-flight fences; Redis allocates a sequence under a namespace epoch in
+capacity-bounded records. Only a newer completed update supersedes an older
+update; a read or failed capture cannot suppress a successful update. An evicted
+or expired token cannot publish a result. A newer `no-store` result removes the
+previous entry. Source 304 processing merges policy/validators, clears old
 Date/Age accounting and retains the PNG ETag without changing the service's
-`Image` or its source headers. Keep size/entry enforcement in the existing cache.
+`Image` or its source headers.
+
+Keep size/entry enforcement in the selected store. Redis records and LRU/expiry
+indexes share one hash slot; scripts atomically enforce fences, deletion and
+approximate byte/entry budgets. An incomplete script leaves a marker so the next
+operation discards partial state and changes the namespace epoch. Do not add a
+local fallback or store PNG bytes. Redis retention is separate from HTTP
+freshness, and reads never renew either. The Redis clock reference must account
+conservatively for network delay.
 
 Fresh matching metadata may return 304 without a browser and without renewing
 its validation time. Expired metadata needs source validation or recapture
 before deciding 304. Unconditional GET and all HTML POST requests remain
 independent captures. See the README for client-visible freshness semantics and
 the limits of treating main-document validators as evidence about a screenshot.
+
+## Redis integration checks
+
+```sh
+GOTOOLCHAIN=go1.26.10 make redis-test
+```
+
+This starts a disposable Redis 8.2.2 container bound to an ephemeral loopback
+port, runs the real-Redis tests with the race detector both with and without
+file-based password authentication, and removes the container on exit. No production Redis is used. To supply a dedicated disposable server,
+set `WEBCAPPI_REDIS_TEST_ADDR` and run
+`go test -race -count=1 ./internal/httpapi -run TestRedis`. Tests use unique
+namespaces, delete their own data, and flush the server's script cache; do not
+point them at a shared production Redis. Ordinary `make test` skips tests that
+need an actual Redis server; scope/timeout/memory-fence tests still run.
+
+The scenarios cover cross-instance 304 responses, source revalidation and header
+filtering, Pod clock differences, unconditional/HTML captures, concurrent update
+fences, no-store deletion, LRU and byte budgets, retention and Age, namespace
+loss, script-cache loss, dependency failures, readiness/liveness, reconnects and
+incompatible serialized metadata. A local TLS proxy checks trusted and untrusted
+certificates against real Redis traffic. The single-endpoint implementation
+does not qualify Redis Cluster/Sentinel or an actual Kubernetes failover/rollout.
+
+The real-container Redis smoke also exercises Chromium and automatic profiles:
+
+```sh
+python3 scripts/redis-smoke.py
+```
+
+It creates a private Docker network with Redis, a static fixture and three API
+containers. It checks cross-replica validation, application restart reuse,
+generation isolation, Redis outage/recovery, and Redis-independent HTML/CLI
+captures. The browser sandbox exception is confined to its disposable test
+configuration, as in the existing smoke scripts. All containers/networks are
+removed on success or failure. It uses `WEBCAPPI_IMAGE`, `PLATFORM` and
+`WEBCAPPI_ARTIFACTS_DIR` through the shared smoke helpers.
 
 ## Regression checks
 
@@ -339,7 +388,7 @@ the README describes staging and deploying profile updates.
 
 ## Recorded validation scope
 
-Last full local regression: **2026-10-25 (Asia/Tokyo)** against implementation
+Previous full local regression: **2026-10-25 (Asia/Tokyo)** against implementation
 commit `dacdc05151110ddb8fe80c8aa66c8284ead95924`, with Go **1.26.10** and full
 Chrome for Testing **156.0.8078.47**. These are historical results, not a claim
 that future changes or arbitrary production environments have been verified.
@@ -376,3 +425,29 @@ When recording a new result, include date, implementation commit, tool/browser
 versions, platforms, commands, outcomes, skipped checks and cleanup. Separate
 build evidence from runtime evidence, maintained tests from one-off probes,
 and current execution from earlier cached or historical results.
+
+
+### Redis backend verification
+
+Verified on **2026-10-25 (Asia/Tokyo)** in the working tree based on
+`e2cfc7dc541b5eab408b1c60433f4c64e9e3ad20`, using Go **1.26.10**,
+go-redis **v9.23.0**, Redis **8.2.2**, Chrome for Testing **156.0.8078.47**,
+and Docker client/server **29.9.1**. These results qualify the local changes,
+not an arbitrary Redis deployment or production environment.
+
+| Scope | Result |
+| --- | --- |
+| Go | `make test` with the race detector, `go vet ./...`, Staticcheck v0.8.1 and Go formatting checks passed. Unchanged Go packages reused test-result cache entries; the browser test binary was executed separately. |
+| Redis protocol and storage | `make redis-test` passed with and without file-based passwords, without Go test-result cache reuse. The TLS proxy verified trusted/untrusted certificates with real Redis traffic. Completed-update ordering, no-store, read/failed-request races, epoch loss, incomplete-script recovery, retention, capacity, timeouts, script reload and errors passed. |
+| linux/amd64 runtime | `make image`, `make browser-test`, `python3 scripts/container-smoke.py` and `python3 scripts/redis-smoke.py` passed. Both CDP font suites and extension/profile lifecycle checks ran. The final smoke exercised actual captures across replicas, restart reuse, generation isolation and Redis outage/recovery. |
+| Both architectures: builds | `make binaries` and `make image-multi` passed using a temporary Docker-container BuildKit builder. Both build-time Chrome version commands succeeded. One-off OCI inspection checked both runtime platform descriptors/configurations, ELF architectures and application binaries against the corresponding CLI exports. The loaded amd64 image's application binary also matched the CLI export. |
+| Deployment examples | Compose configuration validation and Kubernetes client dry-run with `--validate=false` passed. No live Kubernetes resources were created and no Compose stack was deployed. |
+| linux/arm64 runtime | Unverified. A host support probe using `/bin/true` in the existing arm64 image failed with `exec format error`; this did not execute or qualify the new application. BuildKit's bundled emulation supported image build steps. |
+| Production isolation | The existing sandbox exception remained confined to disposable tests. Sandbox-enabled production containers and a live Kubernetes rollout were not qualified. Redis Cluster/Sentinel discovery and HA failover were not qualified. |
+
+Browser artifacts are under `artifacts/redis-20261025-amd64/`; one-off OCI
+inspection wrote `multi-build.json` there. CLI exports remain under
+`artifacts/binaries/` and the image archive is `artifacts/webcappi.oci.tar`.
+Previous build exports were preserved under
+`artifacts/redis-build-before-qlo_0fid/`. Test containers/networks and the
+run-specific builder were removed; images and verification artifacts were kept.

@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/dayflower/webcappi/internal/httpapi"
+)
 
 func runCheck(args []string) (err error) {
 	_, path, _, err := parseCommandFlags("check", args)
@@ -14,6 +17,15 @@ func runCheck(args []string) (err error) {
 		return err
 	}
 	defer r.close(&err)
-	fmt.Println("configuration, bundle and browser version verified")
+	cache, err := httpapi.OpenCache(ctx, r.config)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if e := cache.Close(); err == nil {
+			err = e
+		}
+	}()
+	fmt.Println("configuration, bundle, browser version and metadata cache verified")
 	return nil
 }

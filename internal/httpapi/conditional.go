@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -9,22 +10,27 @@ import (
 	"github.com/dayflower/webcappi/internal/service"
 )
 
-// captureValidation holds one GET's metadata snapshot and request-start order.
+// captureValidation holds one GET's metadata snapshot and update fence.
 // It does not retain PNG bytes or own another cache.
 type captureValidation struct {
 	key      string
 	order    uint64
 	previous *metadata
 	matches  bool
+	snapshot metadataSnapshot
 }
 
-func (a *API) lookupValidation(req capture.Request, tags []string, order uint64) captureValidation {
+func (a *API) lookupValidation(ctx context.Context, req capture.Request, tags []string) (captureValidation, error) {
 	key := service.Key(req)
-	previous := a.metadata.get(key)
-	return captureValidation{
-		key: key, order: order, previous: previous,
-		matches: previous != nil && matchesETag(tags, previous.etag),
+	snapshot, err := a.metadata.begin(ctx, key, a.now())
+	if err != nil {
+		return captureValidation{}, err
 	}
+	previous := snapshot.previous
+	return captureValidation{
+		key: key, order: snapshot.order, previous: previous, snapshot: snapshot,
+		matches: previous != nil && matchesETag(tags, previous.etag),
+	}, nil
 }
 
 func (v captureValidation) fresh(now time.Time) bool {
@@ -39,7 +45,7 @@ func (v captureValidation) revalidationSource() *capture.SourceResponse {
 	return nil
 }
 
-func (a *API) recordMetadata(v captureValidation, img *service.Image) (*metadata, error) {
+func (a *API) recordMetadata(ctx context.Context, v captureValidation, img *service.Image) (*metadata, error) {
 	now := a.now()
 	etag, source := img.ETag, img.Source
 	if img.NotModified {
@@ -54,8 +60,12 @@ func (a *API) recordMetadata(v captureValidation, img *service.Image) (*metadata
 		key: v.key, etag: etag, source: source, validated: now,
 		policy: cachePolicy(a.cfg.MaxAgeSeconds, source, now), order: v.order,
 	}
-	// The existing cache enforces ordering, no-store removal and size limits.
-	a.metadata.put(entry)
+	// The selected store enforces ordering, no-store removal and size limits.
+	responseTime, err := a.metadata.commit(ctx, v.snapshot, entry)
+	if err != nil {
+		return nil, err
+	}
+	entry.responseTime = responseTime
 	return entry, nil
 }
 

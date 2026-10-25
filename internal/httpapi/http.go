@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -22,13 +23,16 @@ type API struct {
 	requests chan struct{}
 	draining atomic.Bool
 	check    func(context.Context) error
-	metadata *metadataCache
-	next     atomic.Uint64
+	metadata metadataStore
 	now      func() time.Time
 }
 
-func New(c config.Config, s Getter, check func(context.Context) error) *API {
-	return &API{cfg: c, service: s, requests: make(chan struct{}, c.MaxRequests), check: check, metadata: newMetadataCache(c.MetadataMaxEntries, c.MetadataMaxBytes), now: time.Now}
+func New(c config.Config, s Getter, check func(context.Context) error, caches ...*Cache) *API {
+	var store metadataStore = newMetadataCache(c.MetadataMaxEntries, c.MetadataMaxBytes)
+	if len(caches) > 0 {
+		store = caches[0].store
+	}
+	return &API{cfg: c, service: s, requests: make(chan struct{}, c.MaxRequests), check: check, metadata: store, now: time.Now}
 }
 func (a *API) Drain() { a.draining.Store(true) }
 
@@ -62,6 +66,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				fail(w, 503, "dependencies unavailable")
 				return
 			}
+		}
+		if err := a.metadata.check(ctx); err != nil {
+			fail(w, 503, "dependencies unavailable")
+			return
 		}
 		w.WriteHeader(200)
 		fmt.Fprintln(w, "ready")
@@ -98,14 +106,27 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Cache I/O and rendering share the capture deadline. Renderer cleanup still
+	// completes before the service releases its slot.
+	ctx, cancel := context.WithTimeout(r.Context(), a.cfg.Timeout())
+	defer cancel()
+	r = r.WithContext(ctx)
 
-	order := a.next.Add(1)
 	tags := r.Header.Values("If-None-Match")
 	var validation captureValidation
 	if r.Method == http.MethodGet {
-		validation = a.lookupValidation(req, tags, order)
-		if validation.fresh(a.now()) {
-			writeValidationHeaders(w, validation.previous, a.now())
+		validation, err = a.lookupValidation(r.Context(), req, tags)
+		if err != nil {
+			fail(w, 503, errMetadataUnavailable.Error())
+			return
+		}
+		defer a.metadata.finish(validation.snapshot)
+		now := a.now()
+		if !validation.snapshot.received.IsZero() {
+			now = validation.snapshot.currentTime()
+		}
+		if validation.fresh(now) {
+			writeValidationHeaders(w, validation.previous, now)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -118,12 +139,16 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		entry, err := a.recordMetadata(validation, img)
+		entry, err := a.recordMetadata(r.Context(), validation, img)
 		if err != nil {
-			fail(w, 502, err.Error())
+			status := 502
+			if errors.Is(err, errMetadataUnavailable) {
+				status = 503
+			}
+			fail(w, status, err.Error())
 			return
 		}
-		writeValidationHeaders(w, entry, entry.validated)
+		writeValidationHeaders(w, entry, entry.responseTime)
 		if matchesETag(tags, entry.etag) {
 			w.WriteHeader(http.StatusNotModified)
 			return

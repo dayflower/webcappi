@@ -22,6 +22,7 @@ const DefaultProfileName = "default"
 type Config struct {
 	Listen                string                     `json:"listen"`
 	Auth                  *Auth                      `json:"auth,omitempty"`
+	Cache                 Cache                      `json:"cache"`
 	BrowserPath           string                     `json:"browser_path"`
 	NoSandbox             bool                       `json:"no_sandbox"`
 	WorkDir               string                     `json:"work_dir"`
@@ -76,6 +77,9 @@ func Load(path string) (Config, error) {
 func (c Config) Timeout() time.Duration { return time.Duration(c.CaptureTimeoutSeconds) * time.Second }
 
 func (c Config) Validate() error {
+	if err := c.Cache.Validate(c.MaxAgeSeconds); err != nil {
+		return err
+	}
 	if err := c.ResizeAlgorithm.Validate(); err != nil {
 		return err
 	}

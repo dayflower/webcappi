@@ -2,9 +2,9 @@
 
 A Go REST server that captures a URL or posted HTML as a PNG with independent
 viewport and output sizes, using a fresh Chromium process and a disposable copy
-of a browser profile. The first release targets **Linux amd64 and arm64**, one
-replica and a bounded, process-local cache of validation metadata. PNG bytes are
-never cached by the server.
+of a browser profile. The service targets **Linux amd64 and arm64**, with a bounded validation
+metadata cache stored in process memory by default or shared through Redis.
+PNG bytes are never cached by the server.
 Private addresses and cluster Service DNS names are intentionally supported.
 
 ## Intended use and security
@@ -531,6 +531,7 @@ retention. Configuration changes require a process restart.
 | `queue_size` | 8 | Additional pending captures or source validations (0–1024) |
 | `max_requests` | 64 | Concurrent HTTP capture handlers, including metadata lookups |
 | `capture_timeout_seconds` | 30 | Queue + profile copy + browser start + readiness + delay + PNG (1–300) |
+| `cache` | memory | Metadata backend; see [Redis metadata cache](#redis-metadata-cache) |
 | `max_age_seconds` | 60 | Maximum downstream/metadata freshness lifetime (0–86400) |
 | `metadata_max_bytes` | 1048576 | Validation metadata byte budget (0–67108864) |
 | `metadata_max_entries` | 128 | Validation metadata LRU entry limit (0–10000) |
@@ -577,14 +578,16 @@ GET ETags are quoted SHA-256 hashes of the actual PNG bytes. The server retains
 only the PNG ETag, validation time, freshness policy and main document URL,
 ETag/Last-Modified and freshness headers. Metadata uses an LRU bounded by
 `metadata_max_bytes` and `metadata_max_entries`. Expired entries can retain source
-validators until eviction. Process restarts discard all metadata. Errors and
-responses marked `no-store` are not retained.
+validators until eviction or the Redis retention deadline. Process restarts
+discard memory metadata; Redis metadata can be reused by another instance.
+Errors and responses marked `no-store` are not retained. Bounded update fences
+prevent older captures from repopulating metadata after a newer `no-store`.
 
 The metadata key contains URL (including fragments), viewport, output dimensions,
 the request's `ready_selector` and `delay_ms`, profile name, scale factor and
 renderer schema. Omitted output dimensions and explicit viewport-sized values
-share a key. Profile settings and bundle contents are fixed for the process and
-are not part of the key.
+share a key. Profile settings and bundle contents are fixed for the process. Redis additionally
+isolates rendering settings and deployment generations as described below.
 
 Conditional GET supports weak tags, lists and `*`:
 
@@ -623,14 +626,121 @@ is an explicit window in which changes are assumed absent. Chromium's HTTP
 cache is disabled during capture/navigation so prepared profile disk cache does
 not mask source updates. Service workers retain their normal profile behavior.
 
-Metadata is shared by authorized callers within the process. Responses remain
+Metadata is shared by authorized callers within the configured cache scope. Responses remain
 private by default; deployments that need image caching can configure an
-appropriately isolated reverse proxy. No image cache, capture coalescing,
-distributed state or client cache-bypass directive is implemented.
+appropriately isolated reverse proxy. No image cache, capture coalescing or client cache-bypass directive is implemented.
 
 Configuration migration: replace `cache_ttl_seconds` with `max_age_seconds`,
 remove `cache_max_bytes` and `cache_max_entries`, and optionally set the new
 metadata limits. The old fields are rejected as unknown configuration keys.
+
+## Redis metadata cache
+
+Omit `cache`, or set `"cache": {"backend": "memory"}`, to keep the existing
+process-local LRU with no external dependency. Select Redis for shared validation
+metadata across application replicas:
+
+```json
+{
+  "cache": {
+    "backend": "redis",
+    "redis": {
+      "address": "redis:6379",
+      "namespace": "webcappi-production",
+      "generation": "capture-v1",
+      "username": "default",
+      "password_file": "/run/secrets/redis/password",
+      "tls": true,
+      "timeout_ms": 500,
+      "retention_seconds": 86400
+    }
+  }
+}
+```
+
+`address`, `namespace` and `generation` are required. Namespace and generation
+accept 1–64 ASCII letters, digits, underscores or hyphens. The address is a
+single Redis primary endpoint (`host:port`); Redis Cluster and Sentinel discovery
+are not implemented. The client is pinned to go-redis v9.23.0 (Go 1.26 minimum).
+
+Authentication and TLS are optional. Passwords are read once from an absolute
+file path (1–4096 bytes; trailing CR/LF removed). Use Kubernetes Secrets or
+read-only Docker mounts. `username` selects a Redis ACL user. TLS verifies the
+server hostname and certificate using system roots; optional `ca_file` adds a
+PEM CA bundle from an absolute path. Neither insecure TLS nor passwords in the
+address are supported. Provision the Redis endpoint and credentials separately.
+
+`timeout_ms` defaults to 500 and accepts 1–5000; zero uses the default.
+Connection pools are capped at the smaller of `max_requests` and 16 per Pod.
+Automatic command retries are disabled; the script-cache fallback is bounded by
+the same operation deadline. Cache I/O and capture share the capture deadline.
+The Redis ACL must permit connection initialization, PING, EVAL/EVALSHA and the
+TIME, EXISTS, DEL, HGET/HSET/HDEL, ZADD/ZREM/ZCARD/ZRANGE/ZRANGEBYSCORE and PEXPIRE
+commands used by the scripts, restricted to the application's key prefix.
+
+`metadata_max_entries` and `metadata_max_bytes` apply to the **whole Redis
+scope**, including update fences and approximate record/index overhead, rather
+than to each Pod. Zero capacity disables retention. Redis's actual memory use
+also includes allocator and server overhead; configure a separate `maxmemory`
+limit with headroom. Use a dedicated cache instance with `noeviction`; capacity
+exhaustion produces an error. Application scripts enforce bounded LRU eviction.
+Partial loss of the namespace's Redis keys invalidates the remaining records
+and update tokens together.
+
+Freshness (`max_age_seconds` and source cache headers) is independent of physical
+retention. `retention_seconds` defaults to 86400, must cover `max_age_seconds`,
+and is limited to 604800. Stale entries remain available for source revalidation
+until that retention deadline or capacity eviction. Access does not renew either
+validation time or retention. Expired records are removed on cache operations;
+inactive scopes also expire automatically. Freshness and Age use a Redis clock
+reference with conservative network-delay accounting, so differing Pod clocks
+do not extend shared freshness.
+
+Replicas share a scope when namespace, generation, architecture, pinned browser,
+profile descriptors (excluding template paths), resize algorithm, freshness and
+capacity/retention settings, and capture timeout match. The Redis key prefix is
+`webcappi:{<scope SHA-256>}:`. Profile contents, extension code, fonts and image
+contents are not hashed automatically: **change generation when any of these
+change**, and use the same immutable image/bundles across Pods sharing it. A
+rolling update can run old and new generations together without reusing their
+metadata. Different architectures are isolated. Old generations expire without
+flushing a shared Redis database.
+
+Redis is a required dependency when selected. An initial connection failure stops
+startup. A lookup or write failure returns 503 with `Cache-Control: no-store`;
+there is no automatic memory fallback and no stale-on-error response. Readiness
+checks Redis connectivity, while liveness remains process-only. HTML POST and
+direct CLI captures do not access Redis. Redis replicas/failover can lose recent
+writes according to the Redis deployment's durability settings; this cache does
+not provide stronger consistency than its Redis primary.
+
+To try Redis locally without changing the single-container quick start:
+
+```sh
+docker compose -f deploy/compose.redis.yaml up --build
+```
+
+This example binds the API to loopback, uses an internal Redis with no published
+port, and disables Redis persistence. Its Redis connection is unauthenticated
+and unencrypted; the example is for local use. It preserves the browser sandbox.
+`docker compose -f deploy/compose.redis.yaml down` removes both containers.
+
+For multiple Kubernetes Pods, use `deploy/kubernetes.redis.yaml` **instead of**
+the single-Pod manifest. It supplies three replicas and rolling updates, and
+expects an authenticated Redis primary Service named `redis` in the same
+namespace. Create the existing API authentication Secret and the Redis Secret:
+
+```sh
+kubectl create secret generic webcappi-redis \
+  --from-file=password=/secure/path/redis-password
+kubectl apply -f deploy/kubernetes.redis.yaml
+```
+
+Adjust the Redis address, ACL username, TLS/CA settings, generation and immutable
+API image before applying. ConfigMap changes alone do not restart Pods; roll out
+a new Pod template or run `kubectl rollout restart deployment/webcappi` after
+updating configuration. Each Pod keeps its own scratch space, capture concurrency
+and queue. Redis shares validation metadata, not a global capture queue or limit.
 
 ## Docker and Kubernetes
 
@@ -739,9 +849,10 @@ replicas on updates.
    state as the new template.
 
 Browser patch updates should be explicit, regular releases. The fixed browser
-does not auto-update at runtime. Restarts discard the metadata cache. Independent
-replicas have independent validation metadata and browser concurrency limits;
-this release does not coordinate them.
+does not auto-update at runtime. Restarts discard the memory metadata cache;
+Redis metadata survives application restarts according to its retention and
+Redis lifecycle. Increment Redis generation when promoting changed image or
+bundle contents. Browser concurrency and queue limits remain independent per Pod.
 
 ## Support and limitations
 
