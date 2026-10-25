@@ -17,6 +17,34 @@ import release
 
 
 class ReleaseTest(unittest.TestCase):
+    def test_publish_digest_is_exposed_to_following_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            result = {
+                "image": "ghcr.io/dayflower/webcappi",
+                "digest": "sha256:" + "a" * 64,
+            }
+            with (
+                patch(
+                    "sys.argv",
+                    [
+                        "release.py",
+                        "publish",
+                        "--tag",
+                        "v0.1.1",
+                        "--revision",
+                        "b" * 40,
+                        "--reuse",
+                        "--github-output",
+                        str(output),
+                    ],
+                ),
+                patch.object(release, "publish", return_value=result),
+            ):
+                release.main()
+            self.assertIn("digest=" + result["digest"] + "\n", output.read_text())
+            self.assertIn("image=" + result["image"] + "\n", output.read_text())
+
     def test_oci_extraction_ignores_ownership_and_cleans_up_on_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "image.tar"

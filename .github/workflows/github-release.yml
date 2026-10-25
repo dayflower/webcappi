@@ -1,0 +1,70 @@
+name: GitHub Release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      revision:
+        type: string
+        default: ''
+      digest:
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published version tag (for example v0.1.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Create release and attach verified binaries
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: read
+    concurrency:
+      group: github-webcappi-release
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      EXPECTED_REVISION: ${{ inputs.revision }}
+      EXPECTED_DIGEST: ${{ inputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install OCI transfer tool
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/webcappi-github-release-auth.json" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          subprocess.run(
+              ["skopeo", "login", "--username", os.environ["GHCR_USER"], "--password-stdin", "ghcr.io"],
+              input=os.environ["GHCR_TOKEN"], text=True, check=True,
+          )
+          PY
+      - name: Recover binaries and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/github_release.py --tag "$RELEASE_TAG" --revision "$EXPECTED_REVISION" --digest "$EXPECTED_DIGEST"
+      - name: Remove registry credentials
+        if: ${{ always() }}
+        run: rm -f "$REGISTRY_AUTH_FILE"

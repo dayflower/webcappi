@@ -93,6 +93,14 @@ prereleases such as `0.2.0-rc.1` have only their exact version tag. Prefer an ex
 version or digest for deployments. To roll back, select the previous version or
 digest and recreate the container or update the Kubernetes Deployment image.
 
+After image publication, the CD creates a GitHub Release with automatically
+generated notes, the container's pinned digest, Linux amd64/arm64 CLI archives,
+`release-manifest.json` and `SHA256SUMS`. The archives contain only the
+application executable; native captures still require the pinned Chrome binary,
+libraries, fonts and sandbox configuration described below. All assets are
+attached to a draft before publication, including when immutable releases are
+enabled. Prerelease tags create prereleases on GitHub as well.
+
 The application version comes from its Git tag, independently of the pinned
 Chrome version. `webcappi version` prints the application version, full source
 commit, modified state and Chrome version. Server startup logs include the same
