@@ -23,7 +23,13 @@ class BuildVerificationTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.artifacts = Path(self.directory.name)
 
-    def fixture(self, arches=("amd64", "arm64"), mismatch=False, wrong_platform=False):
+    def fixture(
+        self,
+        arches=("amd64", "arm64"),
+        mismatch=False,
+        wrong_platform=False,
+        labels=None,
+    ):
         blobs = {}
 
         def blob(data):
@@ -51,7 +57,13 @@ class BuildVerificationTest(unittest.TestCase):
                 contents.addfile(entry, io.BytesIO(binary))
             manifest = json_blob(
                 {
-                    "config": json_blob({"os": "linux", "architecture": arch}),
+                    "config": json_blob(
+                        {
+                            "os": "linux",
+                            "architecture": arch,
+                            "config": {"Labels": labels or {}},
+                        }
+                    ),
                     "layers": [blob(layer.getvalue())],
                 }
             )
@@ -100,6 +112,20 @@ class BuildVerificationTest(unittest.TestCase):
         arm64.write_bytes(amd64.read_bytes())
         with self.assertRaisesRegex(ValueError, "Expected a Linux arm64 ELF64"):
             VERIFY.verify(self.artifacts)
+
+    def test_build_identity_labels(self):
+        identity = {"version": "v0.1.0", "revision": "a" * 40, "modified": "false"}
+        labels = {
+            "org.opencontainers.image.source": "https://github.com/dayflower/webcappi",
+            "org.opencontainers.image.version": identity["version"],
+            "org.opencontainers.image.revision": identity["revision"],
+            "io.github.dayflower.webcappi.modified": identity["modified"],
+        }
+        self.fixture(labels=labels)
+        VERIFY.verify(self.artifacts, identity)
+        identity["revision"] = "b" * 40
+        with self.assertRaisesRegex(ValueError, "build identity differs"):
+            VERIFY.verify(self.artifacts, identity)
 
 
 if __name__ == "__main__":

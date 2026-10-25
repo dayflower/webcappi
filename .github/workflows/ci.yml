@@ -13,161 +13,28 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    shell: bash
-
 env:
-  GOTOOLCHAIN: local
   BUILDKIT_IMAGE: moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
   DOCKER_BUILD_RECORD_UPLOAD: "false"
+  WEBCAPPI_VERSION: dev
+  WEBCAPPI_REVISION: ${{ github.sha }}
+  WEBCAPPI_MODIFIED: "false"
 
 jobs:
-  checks:
-    name: Formatting and static analysis
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go
-      - name: Install analysis tools
-        run: |
-          GOBIN="$RUNNER_TEMP/ci-tools/bin" go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
-          GOBIN="$RUNNER_TEMP/ci-tools/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-          python3 -m venv "$RUNNER_TEMP/ci-python"
-          "$RUNNER_TEMP/ci-python/bin/pip" install ruff==0.16.8
-          echo "$RUNNER_TEMP/ci-tools/bin" >> "$GITHUB_PATH"
-          echo "$RUNNER_TEMP/ci-python/bin" >> "$GITHUB_PATH"
-      - run: make format-check lint
-      - run: go vet ./...
-      - run: actionlint
-      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
-
-  test:
-    name: Go and Redis (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go
-      - run: make test
-        env:
-          GOFLAGS: -count=1
-      - run: make redis-test
-
-  browser:
-    name: Browser and API (${{ matrix.arch }})
-    needs: [checks, test]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    env:
-      PLATFORM: linux/${{ matrix.arch }}
-      WEBCAPPI_IMAGE: webcappi:ci-${{ matrix.arch }}
-      WEBCAPPI_ARTIFACTS_DIR: artifacts/browser-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-go
-      - name: Set up native builder
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-        with:
-          version: v0.38.1
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
-      - name: Cache runtime image build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: ${{ env.PLATFORM }}
-          outputs: type=cacheonly
-          cache-from: type=gha,scope=runtime-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.arch }}
-      - name: Cache browser test build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          target: test-browser
-          platforms: ${{ env.PLATFORM }}
-          outputs: type=cacheonly
-          cache-from: |
-            type=gha,scope=runtime-${{ matrix.arch }}
-            type=gha,scope=browser-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=browser-${{ matrix.arch }}
-      # Reuse the builder's local cache through the documented Make targets.
-      - name: Build application image
-        run: make image IMAGE="$WEBCAPPI_IMAGE"
-      - name: Run browser tests
-        run: |
-          mkdir -p "$WEBCAPPI_ARTIFACTS_DIR"
-          make browser-test 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/browser.log"
-      - name: Run profile and REST smoke tests
-        run: python3 scripts/container-smoke.py 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/container-smoke.log"
-      - name: Run Redis replica smoke tests
-        run: python3 scripts/redis-smoke.py 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/redis-smoke.log"
-      - name: Upload screenshots and diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: browser-${{ matrix.arch }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.png
-            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.log
-          if-no-files-found: warn
-          retention-days: 7
+  verify:
+    uses: ./.github/workflows/verify.yml
 
   build:
     name: Multi-platform build
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    needs: [checks, test, browser]
+    needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up build-time arm64 emulation
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-        with:
-          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-          platforms: arm64
-      - name: Set up multi-platform builder
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-        with:
-          version: v0.38.1
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
-      - name: Restore native image build caches
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          outputs: type=cacheonly
-          cache-from: |
-            type=gha,scope=runtime-amd64
-            type=gha,scope=runtime-arm64
-      - run: make binaries
-      - run: make image-multi
-      - name: Verify ELF binaries and OCI runtime platforms
-        run: python3 scripts/verify-build.py
+      - uses: ./.github/actions/build-artifacts
       - name: Upload CLI binaries and verification report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
