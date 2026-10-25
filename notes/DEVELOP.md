@@ -46,7 +46,12 @@ API until shutdown. For a single capture, run `capture` instead:
 ```
 
 `capture` calls the capture service directly and saves the PNG without starting
-an HTTP server. `version` prints the supported browser version.
+an HTTP server. `version` prints the application version, source commit,
+modified state and supported browser version. The Makefile requires Python 3
+and uses Git metadata when available. A direct `go build` defaults to `dev` and
+uses Go's VCS metadata when available; the supported release build paths pass
+identity explicitly and disable automatic VCS stamping so exported and image
+binaries agree.
 
 ### Formatting and static analysis
 
@@ -92,10 +97,14 @@ select another executable or command, for example
 [GitHub Actions](../.github/workflows/ci.yml) runs on pull requests, pushes to
 `main`, and manual dispatch. A newer run cancels the previous run for the same
 ref. Jobs have explicit timeouts and read-only repository permissions.
+[Reusable verification](../.github/workflows/verify.yml) supplies the checks,
+Go/Redis matrix and native browser/API matrix to both CI and Release. The shared
+[artifact build action](../.github/actions/build-artifacts/action.yml) supplies
+multi-platform builds and OCI verification.
 
 | Job | Checks | Platforms |
 | --- | --- | --- |
-| Formatting and static analysis | `make format-check lint`, `go vet ./...`, Actionlint v1.7.12, and Python build-verifier tests. | Linux amd64 |
+| Formatting and static analysis | `make format-check lint`, `go vet ./...`, Actionlint v1.7.12, and Python build/release tests. | Linux amd64 |
 | Go and Redis | `GOFLAGS=-count=1 make test` and `make redis-test`, both with race detection. | Native Linux amd64 and arm64 |
 | Browser and API | `make image`, `make browser-test`, `python3 scripts/container-smoke.py`, and `python3 scripts/redis-smoke.py`, in sequence. | Native Linux amd64 and arm64 |
 | Multi-platform build | `make binaries`, `make image-multi`, and `python3 scripts/verify-build.py`. Runs after runtime checks, on `main` pushes and manual dispatch only. | Both target architectures; arm64 build steps use QEMU |
@@ -123,8 +132,9 @@ seven days. Downloaded ZIP artifacts do not preserve executable permission bits.
 
 The build verifier checks both ELF machine types, follows nested OCI indexes,
 excludes attestation descriptors, checks runtime descriptor/config agreement,
-and compares each image executable's SHA-256 with its exported CLI binary. This
-is build verification; runtime qualification comes from the native browser jobs.
+compares each image executable's SHA-256 with its exported CLI binary, and
+checks image labels against the requested build identity. This is build
+verification; runtime qualification comes from the native browser jobs.
 It can be rerun locally after the existing artifact-export commands below:
 
 ```sh
@@ -394,6 +404,83 @@ exceptions, partial launch and attached-command timeout; verify diagnostics and
 the absence of test containers/networks. Use a live container to inspect browser
 and file cleanup after listen failure or active-capture SIGTERM.
 
+## Releases and GHCR
+
+The [Release workflow](../.github/workflows/release.yml) runs on pushes of `v*`
+tags. A tag must be `vX.Y.Z` or `vX.Y.Z-prerelease`, point to the event commit,
+and identify a clean checkout whose commit belongs to `origin/main`. Leading
+zeros in numeric version identifiers and SemVer build metadata (`+...`) are
+rejected; the latter cannot be represented directly in a Docker tag. Git tags
+are the source of truth; there is no separately maintained VERSION file.
+Use `v0.1.0` for the first release and choose subsequent versions according to
+API/CLI compatibility. Prereleases such as `v0.2.0-rc.1` are supported.
+
+After merging the implementation to main, release a reviewed main commit:
+
+```sh
+git switch main
+git pull --ff-only
+git tag -a v0.1.0 -m 'Release v0.1.0'
+git push origin v0.1.0
+```
+
+The tag push starts release validation and the full reusable verification suite,
+including native amd64 and arm64 browser/API checks. Only after those pass does
+the publishing job build the versioned CLI binaries and multi-platform OCI
+archive. The build verifier checks both platform configurations, image labels
+and executable hashes against the exported CLI binaries. The archive is
+extracted into a temporary OCI directory without restoring file ownership
+(Python 3.12 or newer); Skopeo copies all platforms with preserved digests,
+without rebuilding the image. The temporary directory is removed on failure
+or completion, and publication does not require running Skopeo as root.
+The published platform manifests and top-level digest are checked again. The
+final OCI archive is build-verified; native runtime qualification is supplied by
+the preceding browser/API jobs using the same source commit and build identity.
+
+Publishing uses `GITHUB_TOKEN` with `contents: read` and `packages: write`,
+confined to the publishing job. No PAT is required. Registry credentials live
+in the runner's temporary directory and are removed after the job. The image's
+`org.opencontainers.image.source` label links it to this repository. GHCR creates
+new packages as private: after the first successful push, set the package
+visibility to public if anonymous pulls are intended, and check its repository
+Actions access. See [GitHub's Container registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+Git tag `v0.1.0` publishes image tag `0.1.0`; OCI labels and the binary retain
+`v0.1.0` and the full source commit. Prerelease tags never update `latest`.
+Publishing jobs are serialized, and numeric version comparison prevents an
+older release or rerun from moving `latest` backwards. Existing exact version
+tags are checked on both platforms and reused only when their version, source,
+commit and clean state agree. A differing identity or digest fails rather than
+overwriting the version. Reruns can complete a previously interrupted `latest`
+update without rebuilding the released image. Do not move release Git tags,
+manually overwrite version image tags, or run a second publisher for this image.
+If several releases are queued, GitHub concurrency may replace a pending job;
+rerun the affected workflow after the active publication finishes.
+
+The job summary records the exact image and multi-platform digest for deployment
+pinning and rollback. CLI binaries and `build-verification.json` are retained as
+Actions artifacts for seven days; there is no automatic GitHub Release creation.
+The large OCI archive and synthetic browser profiles are not uploaded.
+
+Local Make targets derive `WEBCAPPI_VERSION`, `WEBCAPPI_REVISION` and
+`WEBCAPPI_MODIFIED` from the checkout. A unique release tag is used only for a
+clean checkout; otherwise the version is `dev`. Outside Git, source metadata is
+`unknown`. All three values may be overridden explicitly, for example when
+building from a source archive:
+
+```sh
+GOTOOLCHAIN=go1.26.10 make build WEBCAPPI_VERSION=v0.1.0 WEBCAPPI_REVISION='REPLACE_WITH_FULL_COMMIT' WEBCAPPI_MODIFIED=false
+```
+
+Replace `REPLACE_WITH_FULL_COMMIT` before running the command. CI and CD pass
+the same values to native image checks, CLI exports and OCI exports. Builds intentionally
+do not embed the wall-clock build time; identity depends on the source version
+and commit. Direct `docker buildx build` invocations must supply these values as
+`--build-arg` options; otherwise the defaults are `dev`, `unknown`, `unknown`.
+For images, labels include `org.opencontainers.image.version`,
+`org.opencontainers.image.revision`, `org.opencontainers.image.source`, and
+`io.github.dayflower.webcappi.modified`.
+
 ## Build artifacts and platforms
 
 Docker's platform selects the application and browser architecture. The Go stage
@@ -512,3 +599,30 @@ inspection wrote `multi-build.json` there. CLI exports remain under
 Previous build exports were preserved under
 `artifacts/redis-build-before-qlo_0fid/`. Test containers/networks and the
 run-specific builder were removed; images and verification artifacts were kept.
+
+
+### Application version and GHCR workflow verification
+
+Verified on **2026-10-25 (Asia/Tokyo)** in the working tree based on
+`f6df9510c8d0908fdcdc2ad0664973da280cdeb9`, using Go **1.26.10**,
+Chrome for Testing **156.0.8078.47**, Docker client/server **29.9.1**,
+Staticcheck **v0.8.1**, Ruff **0.16.8**, Actionlint **v1.7.12** and Skopeo
+**1.13.3**. Native runtime checks used the development identity with
+`modified true`. Export/transfer probes explicitly injected `v0.1.0` and
+`modified false` as synthetic release metadata; they did not create a Git tag
+or publish a GHCR package.
+
+| Scope | Result |
+| --- | --- |
+| Go and static checks | `make test` with race detection, `go vet ./...`, `make format-check lint`, Actionlint and Python AST checks passed. Unchanged Go packages reused test-result cache entries. |
+| Build/release regression tests | All 17 Python tests passed, including annotated tags, commit/main ancestry, dirty checkouts, release syntax, label mismatches, authentication failures, version overwrite rejection, latest ordering and temporary OCI cleanup. |
+| linux/amd64 runtime | `make image`, `make browser-test` and `python3 scripts/container-smoke.py` passed. Both CDP font suites and extension/profile lifecycle tests executed. Native and container CLI version output agreed. |
+| Both architectures: builds | `make binaries`, `make image-multi` and `python3 scripts/verify-build.py` passed using a temporary Docker-container BuildKit v0.33.1 builder and its bundled build-time emulation. Both Chrome version commands passed; CLI/image executable hashes and all build identity labels matched. |
+| Registry transfer | A one-off probe against a disposable loopback Registry 3.0.0 exercised first publication, exact-version reuse, latest promotion without rollback, prerelease exclusion and identity/digest conflict rejection. The actual OCI archive, including attestations and both runtime platforms, was copied with preserved digest `sha256:5248bf4fc0a0040e79b1e5c36ac8305dd506b0cc05f51a506aa0ae53390c67a9` and checked after publication. Skopeo ran as the ordinary user; HTTP was enabled only by a temporary wrapper for the loopback registry. |
+| External/runtime limits | GitHub-hosted workflow execution, real GHCR authentication/publication, native arm64 application runtime and production sandbox deployment were not exercised. GHCR first-publication and authentication errors were covered by mocked HTTP responses. |
+
+Browser outputs and the one-off Registry probe log are under
+`artifacts/release-validation-amd64/`. New CLI/OCI exports and their report are
+under `artifacts/release-validation-build/`; previous exports were restored to
+their original locations. The disposable registries, test containers/networks
+and run-specific builder were removed. Images and validation artifacts were kept.

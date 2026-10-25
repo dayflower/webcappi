@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dayflower/webcappi/internal/buildinfo"
 	"github.com/dayflower/webcappi/internal/capture"
 	"github.com/dayflower/webcappi/internal/httpapi"
 	"github.com/dayflower/webcappi/internal/service"
@@ -47,7 +48,8 @@ func serveHTTP(ctx context.Context, r *runtimeResources, s *service.Service) (er
 	server := &http.Server{Addr: c.Listen, Handler: r.auth.Handler(api), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: c.Timeout() + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan error, 1)
 	go func() {
-		slog.Info("listening", "address", c.Listen, "browser_version", capture.BrowserVersion)
+		version, revision, modified := buildinfo.Current()
+		slog.Info("listening", "address", c.Listen, "version", version, "revision", revision, "modified", modified, "browser_version", capture.BrowserVersion)
 		done <- server.ListenAndServe()
 	}()
 	serverDone := false

@@ -73,6 +73,35 @@ The public guide at `http://localhost:8080/` has capture examples.
 For a single capture without starting the API server, use the same image's
 [`capture` command](#one-shot-capture-with-docker).
 
+## Published images and application version
+
+Release images are published to `ghcr.io/dayflower/webcappi` for Linux amd64
+and arm64. Use an exact version, for example
+`ghcr.io/dayflower/webcappi:0.1.0`, or pin the multi-platform manifest digest
+reported by the Release workflow:
+
+```sh
+docker pull ghcr.io/dayflower/webcappi:0.1.0
+docker run --rm ghcr.io/dayflower/webcappi:0.1.0 webcappi version
+```
+
+In the quick-start command, replace `webcappi:dev` with the published image;
+the configuration, mounts and sandbox requirements are the same. These commands
+require that the version has been released and the package is accessible.
+`latest` tracks the highest published release without a prerelease suffix;
+prereleases such as `0.2.0-rc.1` have only their exact version tag. Prefer an exact
+version or digest for deployments. To roll back, select the previous version or
+digest and recreate the container or update the Kubernetes Deployment image.
+
+The application version comes from its Git tag, independently of the pinned
+Chrome version. `webcappi version` prints the application version, full source
+commit, modified state and Chrome version. Server startup logs include the same
+identity. A clean checkout at a unique release tag builds that release version;
+other checkouts build `dev`. Modified checkouts retain their source commit and
+report `modified true`. Direct Docker builds without metadata arguments report
+`dev` and unknown source metadata. See the [release procedure](notes/DEVELOP.md#releases-and-ghcr)
+for publishing and local build overrides.
+
 ## Browser and fonts
 
 The image includes full **Chrome for Testing 156.0.8078.47**, extensions in

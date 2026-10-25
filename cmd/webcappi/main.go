@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/dayflower/webcappi/internal/buildinfo"
 	"github.com/dayflower/webcappi/internal/capture"
 )
 
@@ -26,7 +27,7 @@ func run(args []string) error {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Println("webcappi; Chrome for Testing " + capture.BrowserVersion)
+		fmt.Println(buildinfo.String() + "; Chrome for Testing " + capture.BrowserVersion)
 		return nil
 	case "init-profile":
 		return runInitProfile(args[1:])

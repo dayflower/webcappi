@@ -3,9 +3,12 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import tarfile
+
+from build_info import identity
 
 ROOT = Path(__file__).resolve().parent.parent
 MACHINES = {"amd64": 62, "arm64": 183}
@@ -48,7 +51,7 @@ def image_fingerprint(archive, manifest, arch):
     raise ValueError(f"No application binary in the {arch} image")
 
 
-def verify(artifacts):
+def verify(artifacts, build_identity=None):
     expected = {}
     for arch in MACHINES:
         with (artifacts / "binaries" / f"linux_{arch}" / "webcappi").open("rb") as f:
@@ -71,6 +74,18 @@ def verify(artifacts):
                     visit(child)
                 return
             config = read_json(blob_path(manifest["config"]))
+            if build_identity is not None:
+                labels = config.get("config", {}).get("Labels", {})
+                expected_labels = {
+                    "org.opencontainers.image.source": "https://github.com/dayflower/webcappi",
+                    "org.opencontainers.image.version": build_identity["version"],
+                    "org.opencontainers.image.revision": build_identity["revision"],
+                    "io.github.dayflower.webcappi.modified": build_identity["modified"],
+                }
+                if any(
+                    labels.get(key) != value for key, value in expected_labels.items()
+                ):
+                    raise ValueError(f"OCI build identity differs: {labels}")
             arch = config["architecture"]
             if config["os"] != "linux" or arch not in expected:
                 raise ValueError(f"Unexpected runtime platform: {config}")
@@ -100,7 +115,12 @@ def verify(artifacts):
 
 def main():
     artifacts = ROOT / "artifacts"
-    report = verify(artifacts)
+    build_identity = identity()
+    for field in build_identity:
+        build_identity[field] = os.environ.get(
+            f"WEBCAPPI_{field.upper()}", build_identity[field]
+        )
+    report = verify(artifacts, build_identity)
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     (artifacts / "build-verification.json").write_text(rendered)
     print(rendered, end="")

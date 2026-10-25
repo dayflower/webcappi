@@ -40,16 +40,28 @@ USER 10001:10001
 FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS build
 ARG TARGETOS
 ARG TARGETARCH
+ARG WEBCAPPI_VERSION=dev
+ARG WEBCAPPI_REVISION=unknown
+ARG WEBCAPPI_MODIFIED=unknown
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath -o /out/webcappi ./cmd/webcappi
+RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath -buildvcs=false \
+    -ldflags "-X github.com/dayflower/webcappi/internal/buildinfo.Version=${WEBCAPPI_VERSION} -X github.com/dayflower/webcappi/internal/buildinfo.Revision=${WEBCAPPI_REVISION} -X github.com/dayflower/webcappi/internal/buildinfo.Modified=${WEBCAPPI_MODIFIED}" \
+    -o /out/webcappi ./cmd/webcappi
 
 FROM scratch AS binary
 COPY --from=build /out/webcappi /webcappi
 
 FROM browser AS runtime
+ARG WEBCAPPI_VERSION=dev
+ARG WEBCAPPI_REVISION=unknown
+ARG WEBCAPPI_MODIFIED=unknown
+LABEL org.opencontainers.image.source="https://github.com/dayflower/webcappi" \
+      org.opencontainers.image.version="${WEBCAPPI_VERSION}" \
+      org.opencontainers.image.revision="${WEBCAPPI_REVISION}" \
+      io.github.dayflower.webcappi.modified="${WEBCAPPI_MODIFIED}"
 COPY --from=build /out/webcappi /usr/local/bin/webcappi
 EXPOSE 8080
 CMD ["webcappi", "serve", "-config", "/etc/webcappi/config.json"]

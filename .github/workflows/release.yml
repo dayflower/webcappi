@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      revision: ${{ steps.release.outputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and main ancestry
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REVISION: ${{ github.sha }}
+        run: python3 scripts/release.py validate --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT"
+
+  verify:
+    needs: validate
+    uses: ./.github/workflows/verify.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
+
+  publish:
+    name: Publish verified image to GHCR
+    needs: [validate, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ghcr-webcappi-publish
+      cancel-in-progress: false
+    env:
+      BUILDKIT_IMAGE: moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+      WEBCAPPI_VERSION: ${{ needs.validate.outputs.version }}
+      WEBCAPPI_REVISION: ${{ needs.validate.outputs.revision }}
+      WEBCAPPI_MODIFIED: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OCI transfer tool
+        run: |
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/webcappi-registry-auth.json" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          subprocess.run(
+              ["skopeo", "login", "--username", os.environ["GHCR_USER"], "--password-stdin", "ghcr.io"],
+              input=os.environ["GHCR_TOKEN"], text=True, check=True,
+          )
+          PY
+      - name: Check for an existing version
+        id: existing
+        run: python3 scripts/release.py check --tag "$WEBCAPPI_VERSION" --revision "$WEBCAPPI_REVISION" --github-output "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/build-artifacts
+        if: steps.existing.outputs.exists != 'true'
+      - name: Publish archive and update latest
+        env:
+          REUSE_RELEASE: ${{ steps.existing.outputs.exists }}
+        run: |
+          options=()
+          if [[ "$REUSE_RELEASE" == true ]]; then
+            options+=(--reuse)
+          fi
+          python3 scripts/release.py publish --tag "$WEBCAPPI_VERSION" --revision "$WEBCAPPI_REVISION" "${options[@]}"
+      - name: Upload release binaries and verification report
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-binaries-${{ github.ref_name }}-${{ github.run_attempt }}
+          path: |
+            artifacts/binaries/
+            artifacts/build-verification.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove registry credentials
+        if: ${{ always() }}
+        run: rm -f "$REGISTRY_AUTH_FILE"
