@@ -1,4 +1,5 @@
 .git
+.ruff_cache
 bin
 artifacts
 bundles

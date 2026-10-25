@@ -47,6 +47,45 @@ API until shutdown. For a single capture, run `capture` instead:
 `capture` calls the capture service directly and saves the PNG without starting
 an HTTP server. `version` prints the supported browser version.
 
+### Formatting and static analysis
+
+Install the validated tool versions before running the checks:
+
+```sh
+GOTOOLCHAIN=go1.26.10 go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+uv tool install ruff==0.16.8
+```
+
+Add `$(go env GOPATH)/bin` and the uv tool executable directory to `PATH`.
+Staticcheck is built with the pinned Go toolchain. Ruff is a development tool;
+the smoke scripts themselves only need Python 3 and Docker.
+
+```sh
+GOTOOLCHAIN=go1.26.10 make format-check
+GOTOOLCHAIN=go1.26.10 make lint
+GOTOOLCHAIN=go1.26.10 make format
+```
+
+| Target | Go | Python |
+| --- | --- | --- |
+| `format-check` | Report unformatted files with the selected Go toolchain's `gofmt`; fail if any are found. | `ruff format --check scripts/` |
+| `format` | `go fmt ./cmd/... ./internal/...` | `ruff format scripts/` |
+| `lint` | `go vet` followed by `staticcheck` on `./cmd/... ./internal/...`, including tests. | `ruff check scripts/` |
+
+Each target also has `-go` and `-python` variants, such as `make lint-go` and
+`make format-check-python`. Go targets cover `cmd/` and `internal/`, including
+test files, and exclude generated probes under `artifacts/`. Python checks
+cover `.py` files in `scripts/`; Python embedded in shell scripts or generated
+strings is outside their scope.
+`ruff.toml` sets an 88-character formatting line length and explicitly selects
+the `E4`, `E7`, `E9` and `F` lint rules.
+
+`format-check` and `lint` do not rewrite source files. Only `format` rewrites
+formatting; it does not apply lint fixes. The targets use installed tools and
+do not install them automatically. Override `GO`, `STATICCHECK` or `RUFF` to
+select another executable or command, for example
+`make lint-python RUFF='uvx --from ruff==0.16.8 ruff'`.
+
 ## Code organization
 
 | Location | Responsibility |
@@ -93,8 +132,8 @@ without starting a browser. Capture-parameter validation follows runtime
 preparation, so a startup error can precede an invalid URL/dimension error.
 
 The CLI retains its legacy 16 KiB encoded-input size check without constructing
-an HTTP request. Capture errors retain `capture HTTP <status>: <JSON>`, JSON
-HTML escaping and the final newline. `main` logs errors to stderr and exits 1;
+an HTTP request. Capture errors use `capture HTTP <status>: <JSON>` with JSON
+HTML escaping and no trailing newline. `main` logs errors to stderr and exits 1;
 successful captures write PNG bytes to `-out`, creating files with mode 0600.
 These behaviors are compatibility constraints, not a requirement to route the
 CLI through HTTP. HTTP status/header/JSON behavior is covered separately.
@@ -168,7 +207,7 @@ Run checks relevant to the change with the pinned toolchain:
 
 ```sh
 GOTOOLCHAIN=go1.26.10 GOFLAGS=-count=1 make test
-GOTOOLCHAIN=go1.26.10 go vet ./...
+GOTOOLCHAIN=go1.26.10 make format-check lint
 ```
 
 `make test` runs race detection. Without browser environment variables it skips

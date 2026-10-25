@@ -106,8 +106,7 @@ func captureToFile(ctx context.Context, c config.Config, s captureGetter, in cap
 	return os.WriteFile(out, img.PNG, 0600)
 }
 
-// Keep the existing CLI error text, including JSON escaping and its final newline.
 func captureError(status int, message string) error {
 	body, _ := json.Marshal(map[string]string{"error": message})
-	return fmt.Errorf("capture HTTP %d: %s\n", status, body)
+	return fmt.Errorf("capture HTTP %d: %s", status, body)
 }

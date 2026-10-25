@@ -103,7 +103,7 @@ func TestCaptureCLIAndHTTPParity(t *testing.T) {
 				t.Fatalf("HTTP status=%d, want %d: %s", w.Code, tc.status, w.Body)
 			}
 			if w.Code != 200 {
-				want := "capture HTTP 400: " + w.Body.String()
+				want := "capture HTTP 400: " + strings.TrimSuffix(w.Body.String(), "\n")
 				if w.Code != 400 || err == nil || err.Error() != want || len(cli.requests) != 0 || len(httpService.requests) != 0 {
 					t.Fatalf("CLI error=%v, HTTP=%d %s, calls=%d/%d", err, w.Code, w.Body, len(cli.requests), len(httpService.requests))
 				}
@@ -130,17 +130,17 @@ func TestCaptureCLIAndHTTPParity(t *testing.T) {
 	}
 }
 
-func TestCaptureCLIErrorCompatibility(t *testing.T) {
+func TestCaptureCLIErrors(t *testing.T) {
 	for _, tc := range []struct {
 		err  error
 		want string
 	}{
-		{service.ErrBusy, "capture HTTP 503: {\"error\":\"capture capacity exhausted\"}\n"},
-		{service.ErrClosed, "capture HTTP 503: {\"error\":\"service is shutting down\"}\n"},
-		{context.DeadlineExceeded, "capture HTTP 504: {\"error\":\"capture timed out\"}\n"},
-		{context.Canceled, "capture HTTP 503: {\"error\":\"capture canceled\"}\n"},
-		{errors.Join(errors.New("wrapped"), context.Canceled), "capture HTTP 503: {\"error\":\"capture canceled\"}\n"},
-		{errors.New("navigation failure"), "capture HTTP 502: {\"error\":\"page capture failed\"}\n"},
+		{service.ErrBusy, "capture HTTP 503: {\"error\":\"capture capacity exhausted\"}"},
+		{service.ErrClosed, "capture HTTP 503: {\"error\":\"service is shutting down\"}"},
+		{context.DeadlineExceeded, "capture HTTP 504: {\"error\":\"capture timed out\"}"},
+		{context.Canceled, "capture HTTP 503: {\"error\":\"capture canceled\"}"},
+		{errors.Join(errors.New("wrapped"), context.Canceled), "capture HTTP 503: {\"error\":\"capture canceled\"}"},
+		{errors.New("navigation failure"), "capture HTTP 502: {\"error\":\"page capture failed\"}"},
 	} {
 		out := filepath.Join(t.TempDir(), "capture.png")
 		s := &recordingGetter{err: tc.err}
@@ -152,7 +152,7 @@ func TestCaptureCLIErrorCompatibility(t *testing.T) {
 			t.Fatalf("service failure wrote output: %v", err)
 		}
 	}
-	if got := captureError(400, "ready_selector must be <=1024 bytes").Error(); got != "capture HTTP 400: {\"error\":\"ready_selector must be \\u003c=1024 bytes\"}\n" {
+	if got := captureError(400, "ready_selector must be <=1024 bytes").Error(); got != "capture HTTP 400: {\"error\":\"ready_selector must be \\u003c=1024 bytes\"}" {
 		t.Fatalf("JSON escaping changed: %q", got)
 	}
 }
