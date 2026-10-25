@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 
 	"github.com/chromedp/chromedp"
 )
@@ -23,31 +22,10 @@ type TemporaryProfile struct {
 func (p *TemporaryProfile) Close() error { return os.RemoveAll(p.root) }
 
 func (p *TemporaryProfile) CheckFiles(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+	if err := CheckProfileFiles(ctx, p.Profile); err != nil {
+		return fmt.Errorf("temporary profile: %w", err)
 	}
-	bundle := filepath.Dir(p.Profile.UserDataDir)
-	manifest, err := os.ReadFile(filepath.Join(bundle, "bundle.json"))
-	if err != nil {
-		return err
-	}
-	var declared Profile
-	if err := json.Unmarshal(manifest, &declared); err != nil {
-		return err
-	}
-	if !reflect.DeepEqual(declared, p.Profile) {
-		return fmt.Errorf("temporary profile descriptor changed")
-	}
-	for _, path := range []string{"Local State", "Default/Preferences"} {
-		f, err := os.Open(filepath.Join(p.Profile.UserDataDir, path))
-		if err != nil {
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-	}
-	return ctx.Err()
+	return nil
 }
 
 // NewProfile initializes a complete, extension-free template without a display.

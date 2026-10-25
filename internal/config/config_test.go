@@ -1,7 +1,9 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,10 +44,29 @@ func TestBundleChecks(t *testing.T) {
 	if err = c.CheckFiles(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("extension registration", func(t *testing.T) {
+		path := filepath.Join(data, "Default", "Preferences")
+		if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.WriteFile(path, encoded, 0600); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if err := c.CheckFiles(t.Context()); err == nil || !strings.Contains(err.Error(), "profile default:") || !strings.Contains(err.Error(), "must be enabled and installed") {
+			t.Fatalf("missing extension registration allowed: %v", err)
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := c.CheckFiles(ctx); !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "profile default:") {
+		t.Fatalf("profile cancellation lost its name: %v", err)
+	}
 	p.ReadySelectors = []string{"#ready"}
 	c.Profiles["default"] = p
-	if err = c.CheckFiles(t.Context()); err == nil {
-		t.Fatal("mismatched bundle allowed")
+	if err = c.CheckFiles(t.Context()); err == nil || !strings.Contains(err.Error(), "profile default:") || !strings.Contains(err.Error(), "bundle.json does not match") {
+		t.Fatalf("mismatched bundle lost its profile name: %v", err)
 	}
 	p.ReadySelectors = nil
 	p.UserDataDir = work
@@ -58,6 +79,55 @@ func TestBundleChecks(t *testing.T) {
 	c.Profiles["default"] = p
 	if err = c.Validate(); err == nil {
 		t.Fatal("profile directory traversal allowed")
+	}
+}
+
+func TestCheckFilesResolvedPlacement(t *testing.T) {
+	for _, templateInsideWork := range []bool{false, true} {
+		t.Run(fmt.Sprintf("template inside work=%t", templateInsideWork), func(t *testing.T) {
+			root := t.TempDir()
+			outer := filepath.Join(root, "outer")
+			inner := filepath.Join(outer, "inner")
+			if err := os.MkdirAll(inner, 0700); err != nil {
+				t.Fatal(err)
+			}
+			alias := filepath.Join(root, "alias")
+			if err := os.Symlink(inner, alias); err != nil {
+				t.Fatal(err)
+			}
+			c := Defaults()
+			c.WorkDir = alias
+			p := capture.Profile{UserDataDir: outer, ProfileDirectory: "Default"}
+			if templateInsideWork {
+				c.WorkDir, p.UserDataDir = outer, alias
+			}
+			c.Profiles = map[string]capture.Profile{"provided": p}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("paths should be lexically separate: %v", err)
+			}
+			if err := c.CheckFiles(t.Context()); err == nil || !strings.Contains(err.Error(), "profile provided resolves inside work directory") {
+				t.Fatalf("resolved placement restriction lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckFilesScratch(t *testing.T) {
+	c := Defaults()
+	c.WorkDir = t.TempDir()
+	if err := c.CheckFiles(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(c.WorkDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("scratch probe leaked files: %v, %v", entries, err)
+	}
+	c.WorkDir = filepath.Join(c.WorkDir, "file")
+	if err := os.WriteFile(c.WorkDir, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CheckFiles(t.Context()); err == nil {
+		t.Fatal("invalid scratch directory allowed")
 	}
 }
 

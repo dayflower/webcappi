@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -153,28 +152,13 @@ func (c Config) CheckFiles(ctx context.Context) error {
 	for name, p := range c.Profiles {
 		template, err := filepath.EvalSymlinks(p.UserDataDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("profile %s: %w", name, err)
 		}
 		if within(template, work) || within(work, template) {
 			return fmt.Errorf("profile %s resolves inside work directory", name)
 		}
-		manifest, err := os.ReadFile(filepath.Join(filepath.Dir(p.UserDataDir), "bundle.json"))
-		if err != nil {
-			return fmt.Errorf("profile %s bundle manifest: %w", name, err)
-		}
-		var declared capture.Profile
-		if err = json.Unmarshal(manifest, &declared); err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(declared, p) {
-			return fmt.Errorf("profile %s bundle.json does not match the configured profile descriptor", name)
-		}
-		for _, path := range []string{filepath.Join(p.UserDataDir, "Local State"), filepath.Join(p.UserDataDir, p.ProfileDirectory, "Preferences")} {
-			f, err := os.Open(path)
-			if err != nil {
-				return fmt.Errorf("profile %s: %w", name, err)
-			}
-			f.Close()
+		if err := capture.CheckProfileFiles(ctx, p); err != nil {
+			return fmt.Errorf("profile %s: %w", name, err)
 		}
 		if err := checkExtensions(p); err != nil {
 			return fmt.Errorf("profile %s: %w", name, err)
