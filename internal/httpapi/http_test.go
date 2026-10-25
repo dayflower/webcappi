@@ -248,14 +248,26 @@ func TestInvalidInputAndErrors(t *testing.T) {
 	if w := get(api, valid, ""); w.Code != 504 || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal(w)
 	}
-	api.service = errorGetter{errors.New("navigation failed")}
-	if w := get(api, valid, ""); w.Code != 502 {
-		t.Fatal(w)
-	}
-	for _, err := range []error{service.ErrBusy, service.ErrClosed, context.Canceled} {
-		api.service = errorGetter{err}
-		if w := get(api, valid, ""); w.Code != 503 {
-			t.Fatal(w)
+	for _, tc := range []struct {
+		err        error
+		status     int
+		message    string
+		retryAfter string
+	}{
+		{errors.New("navigation failed"), 502, "page capture failed", ""},
+		{service.ErrBusy, 503, service.ErrBusy.Error(), "1"},
+		{service.ErrClosed, 503, service.ErrClosed.Error(), "1"},
+		{context.Canceled, 503, "capture canceled", ""},
+		{context.DeadlineExceeded, 504, "capture timed out", ""},
+	} {
+		api.service = errorGetter{fmt.Errorf("wrapped: %w", tc.err)}
+		message := tc.message
+		if tc.retryAfter != "" {
+			message = "wrapped: " + message
+		}
+		w := get(api, valid, "")
+		if w.Code != tc.status || w.Body.String() != fmt.Sprintf("{\"error\":%q}\n", message) || w.Header().Get("Retry-After") != tc.retryAfter || w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("ETag") != "" || w.Header().Get("Age") != "" {
+			t.Fatalf("%v: status=%d headers=%v body=%s", tc.err, w.Code, w.Header(), w.Body)
 		}
 	}
 }
@@ -510,17 +522,20 @@ func TestHTMLAdmissionAndAuthenticationBeforeBody(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name      string
+		path      string
 		status    int
 		configure func()
 	}{
-		{"unauthorized", 401, func() {}},
-		{"busy", 503, func() { api.requests = make(chan struct{}, 1); api.requests <- struct{}{} }},
-		{"draining", 503, func() { api.Drain() }},
+		{"unauthorized", "/capture?profile=alternate", 401, func() {}},
+		{"unauthorized invalid query", "/capture?unknown=x", 401, func() {}},
+		{"busy", "/capture?profile=alternate", 503, func() { api.requests = make(chan struct{}, 1); api.requests <- struct{}{} }},
+		{"invalid query before admission", "/capture?unknown=x", 400, func() {}},
+		{"draining", "/capture?profile=alternate", 503, func() { api.Drain() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.configure()
 			body := &failingBody{}
-			r := httptest.NewRequest(http.MethodPost, "/capture?profile=alternate", body)
+			r := httptest.NewRequest(http.MethodPost, tc.path, body)
 			r.Header.Set("Content-Type", "text/html")
 			if tc.status != 401 {
 				r.Header.Set("Authorization", "Bearer secret")

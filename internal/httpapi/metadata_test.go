@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +17,110 @@ import (
 	"github.com/dayflower/webcappi/internal/config"
 	"github.com/dayflower/webcappi/internal/service"
 )
+
+type getterFunc func(context.Context, capture.Request) (*service.Image, error)
+
+func (f getterFunc) Get(ctx context.Context, req capture.Request) (*service.Image, error) {
+	return f(ctx, req)
+}
+
+func TestSourceRevalidationPreservesServiceResult(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Profiles = map[string]capture.Profile{"default": {ProfileDirectory: "Default"}}
+	now := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+	initial := &service.Image{PNG: []byte("png"), ETag: `"initial"`, Source: &capture.SourceResponse{
+		URL: "http://fixture/", RequestStarted: now,
+		Headers: http.Header{
+			"Cache-Control": {"max-age=10"}, "Etag": {"source-v1"},
+			"Last-Modified": {"Wed, 21 Oct 2015 07:28:00 GMT"},
+			"Date":          {now.Add(-20 * time.Second).Format(http.TimeFormat)}, "Age": {"20"},
+		},
+	}}
+	validated := &service.Image{NotModified: true, Source: &capture.SourceResponse{
+		URL: "http://fixture/", RequestStarted: now.Add(30 * time.Second),
+		Headers: http.Header{"Cache-Control": {"max-age=40"}, "Etag": {"source-v2"}},
+	}}
+	wantSource := *validated.Source
+	wantSource.Headers = validated.Source.Headers.Clone()
+	var calls int
+	api := New(cfg, getterFunc(func(_ context.Context, req capture.Request) (*service.Image, error) {
+		calls++
+		if calls == 1 {
+			return initial, nil
+		}
+		if req.Revalidate == nil || req.Revalidate.Headers.Get("ETag") != "source-v1" {
+			t.Fatal("expired matching request lost source validator")
+		}
+		return validated, nil
+	}), nil)
+	api.now = func() time.Time { return now }
+	const path = "/capture?url=http://fixture/"
+	first := get(api, path, "")
+	now = now.Add(30 * time.Second)
+	response := get(api, path, first.Header().Get("ETag"))
+	if response.Code != 304 || response.Body.Len() != 0 || response.Header().Get("ETag") != initial.ETag || response.Header().Get("Age") != "0" || response.Header().Get("Cache-Control") != "private, max-age=40, must-revalidate" {
+		t.Fatal("source validation did not merge policy or renew freshness", response)
+	}
+	if validated.ETag != "" || !reflect.DeepEqual(*validated.Source, wantSource) {
+		t.Fatal("HTTP handling modified the service result", validated)
+	}
+	if initial.Source.Headers.Get("Age") != "20" || initial.Source.Headers.Get("ETag") != "source-v1" {
+		t.Fatal("source validation modified the previous service result")
+	}
+	req, err := api.parse(httptest.NewRequest(http.MethodGet, path, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := api.metadata.get(service.Key(req))
+	if stored.source.Headers.Get("ETag") != "source-v2" || stored.source.Headers.Get("Last-Modified") == "" || stored.source.Headers.Get("Date") != "" || stored.source.Headers.Get("Age") != "" {
+		t.Fatal("source 304 header merge lost validators or retained old age", stored.source.Headers)
+	}
+	now = now.Add(5 * time.Second)
+	if fresh := get(api, path, initial.ETag); fresh.Code != 304 || fresh.Header().Get("Age") != "5" || calls != 2 {
+		t.Fatal("renewed metadata did not bypass service", fresh)
+	}
+}
+
+func TestConcurrentCaptureMetadataOrder(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Profiles = map[string]capture.Profile{"default": {ProfileDirectory: "Default"}}
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	var calls atomic.Int32
+	api := New(cfg, getterFunc(func(context.Context, capture.Request) (*service.Image, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+			return &service.Image{PNG: []byte("old"), ETag: `"old"`}, nil
+		}
+		return &service.Image{PNG: []byte("new"), ETag: `"new"`}, nil
+	}), nil)
+	const path = "/capture?url=http://fixture/"
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() { completed <- get(api, path, "") }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first request did not reach service")
+	}
+	second := get(api, path, "")
+	if second.Code != 200 || second.Body.String() != "new" {
+		t.Fatal(second)
+	}
+	unblock()
+	select {
+	case first := <-completed:
+		if first.Code != 200 || first.Body.String() != "old" {
+			t.Fatal(first)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first request did not finish")
+	}
+	if fresh := get(api, path, second.Header().Get("ETag")); fresh.Code != 304 || calls.Load() != 2 {
+		t.Fatal("older completion replaced newer metadata", fresh)
+	}
+}
 
 func TestSourceRevalidation(t *testing.T) {
 	for _, validator := range []string{"ETag", "Last-Modified"} {
@@ -127,6 +234,48 @@ func TestMetadataPolicies(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNoStoreRemovesPreviousMetadata(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Profiles = map[string]capture.Profile{"default": {ProfileDirectory: "Default"}}
+	var calls int
+	s := service.New(t.Context(), cfg, func(_ context.Context, req capture.Request) (capture.Result, error) {
+		calls++
+		control := "max-age=60"
+		if calls == 2 {
+			control = "no-store"
+		}
+		return capture.Result{PNG: []byte("png"), Source: &capture.SourceResponse{
+			URL: req.URL, RequestStarted: time.Now(), Headers: http.Header{"Cache-Control": {control}},
+		}}, nil
+	})
+	defer s.Close()
+	api := New(cfg, s, nil)
+	const path = "/capture?url=http://fixture/"
+	first := get(api, path, "")
+	if first.Code != 200 || len(api.metadata.entries) != 1 {
+		t.Fatal("initial GET did not populate metadata", first)
+	}
+	second := get(api, path, "")
+	if second.Code != 200 || second.Header().Get("Cache-Control") != "private, no-store" || second.Header().Get("Age") != "" || len(api.metadata.entries) != 0 {
+		t.Fatal("no-store GET retained previous metadata", second)
+	}
+	if response := get(api, path, first.Header().Get("ETag")); response.Code != 304 || calls != 3 {
+		t.Fatal("no-store left a fresh metadata shortcut", response, calls)
+	}
+}
+
+func TestUnexpectedSourceNotModified(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Profiles = map[string]capture.Profile{"default": {ProfileDirectory: "Default"}}
+	api := New(cfg, getterFunc(func(context.Context, capture.Request) (*service.Image, error) {
+		return &service.Image{NotModified: true}, nil
+	}), nil)
+	response := get(api, "/capture?url=http://fixture/", "*")
+	if response.Code != 502 || response.Body.String() != "{\"error\":\"unexpected source validation response\"}\n" || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("ETag") != "" || len(api.metadata.entries) != 0 {
+		t.Fatal("unexpected source 304 was accepted", response)
 	}
 }
 
