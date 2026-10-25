@@ -1,0 +1,17 @@
+name: Set up project Go
+description: Install and cache the exact Go toolchain version from Dockerfile.
+runs:
+  using: composite
+  steps:
+    - name: Read Go version from Dockerfile
+      id: toolchain
+      shell: bash
+      run: |
+        version="$(sed -nE 's/^FROM .*golang:([0-9]+\.[0-9]+\.[0-9]+)-bookworm(@sha256:[0-9a-f]{64})? AS build$/\1/p' Dockerfile)"
+        [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+    - name: Install Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ steps.toolchain.outputs.version }}
+        cache-dependency-path: go.sum

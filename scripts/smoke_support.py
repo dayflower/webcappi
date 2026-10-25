@@ -14,6 +14,14 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
+REDIS_IMAGE = (
+    "redis:8.2.2-alpine@sha256:"
+    "59b6e694653476de2c992937ebe1c64182af4728e54bb49e9b7a6c26614d8933"
+)
+PYTHON_IMAGE = (
+    "python:3.13-alpine@sha256:"
+    "bf12ecc0bea3f171d55145dd02c78b5eeb09f30ee2ac9cc2b4c9e4e8f5e30741"
+)
 
 
 def docker(*args, check=True, binary=False, timeout=60):

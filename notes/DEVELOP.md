@@ -87,6 +87,68 @@ do not install them automatically. Override `GO`, `STATICCHECK` or `RUFF` to
 select another executable or command, for example
 `make lint-python RUFF='uvx --from ruff==0.16.8 ruff'`.
 
+## Continuous integration
+
+[GitHub Actions](../.github/workflows/ci.yml) runs on pull requests, pushes to
+`main`, and manual dispatch. A newer run cancels the previous run for the same
+ref. Jobs have explicit timeouts and read-only repository permissions.
+
+| Job | Checks | Platforms |
+| --- | --- | --- |
+| Formatting and static analysis | `make format-check lint`, `go vet ./...`, Actionlint v1.7.12, and Python build-verifier tests. | Linux amd64 |
+| Go and Redis | `GOFLAGS=-count=1 make test` and `make redis-test`, both with race detection. | Native Linux amd64 and arm64 |
+| Browser and API | `make image`, `make browser-test`, `python3 scripts/container-smoke.py`, and `python3 scripts/redis-smoke.py`, in sequence. | Native Linux amd64 and arm64 |
+| Multi-platform build | `make binaries`, `make image-multi`, and `python3 scripts/verify-build.py`. Runs after runtime checks, on `main` pushes and manual dispatch only. | Both target architectures; arm64 build steps use QEMU |
+
+The native runners are `ubuntu-24.04` and `ubuntu-24.04-arm`. The shared local
+setup action reads the exact Go version from the build stage in
+Dockerfile. Staticcheck and Ruff use the versions documented above. The workflow
+does not publish images or deploy the application.
+
+All external `uses:` references are pinned to full commit SHAs with release
+comments. CI infrastructure and fixture images are pinned to multi-platform
+SHA-256 digests: BuildKit, QEMU, and Redis/Python test fixtures. Dockerfile
+frontend/base images retain their existing tags without digest pins.
+Update tags/comments and hashes together after checking the upstream
+release and both architectures. Locally built application/test images use local
+tags because their contents come from the checked-out source.
+
+Go dependency/build caches and architecture-specific Docker build caches reduce
+setup time. Tests still execute on every run. Each browser matrix job has a fresh
+artifact directory; it runs smoke scenarios without concurrent heavy builds.
+Screenshots and test logs are retained for seven days, including after failures.
+Synthetic browser profiles and the large OCI archive are not uploaded. Successful
+multi-platform jobs retain the CLI binaries and `build-verification.json` for
+seven days. Downloaded ZIP artifacts do not preserve executable permission bits.
+
+The build verifier checks both ELF machine types, follows nested OCI indexes,
+excludes attestation descriptors, checks runtime descriptor/config agreement,
+and compares each image executable's SHA-256 with its exported CLI binary. This
+is build verification; runtime qualification comes from the native browser jobs.
+It can be rerun locally after the existing artifact-export commands below:
+
+```sh
+python3 scripts/verify-build.py
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
+The existing test-only sandbox exception remains confined to disposable tests.
+Passing CI does not qualify a sandbox-enabled production host or Kubernetes
+deployment. Branch protection and required-check settings are managed separately
+in GitHub. The first hosted run must pass before claiming hosted-runner runtime
+verification.
+
+Local verification for the CI introduction (2026-10-25) passed on Linux amd64:
+Actionlint, toolchain extraction, formatting/static analysis, Go race tests,
+`go vet ./...`, Redis integration tests, real-browser/CDP font checks, both
+container smoke suites, and the five build-verifier unit tests. Both architecture
+exports passed `make binaries`, `make image-multi`, and `verify-build.py`, with
+matching CLI/image executable hashes. The pinned BuildKit accepted `cacheonly`
+output, and the arm64 build-time Chrome version check passed under emulation.
+Hosted workflow execution and native arm64 runtime checks remain unverified.
+After removing the Dockerfile image digests, workflow lint and Go-version
+extraction were rechecked; image/runtime suites were not rerun for that adjustment.
+
 ## Code organization
 
 | Location | Responsibility |
@@ -367,10 +429,9 @@ platforms omit arm64. Its ability to run build steps does not establish Docker
 runtime emulation. Some hosts require administrator-provided emulation.
 See [Docker's multi-platform build documentation](https://docs.docker.com/build/building/multi-platform/).
 
-For CI, prefer native amd64/arm64 runners in a matrix with the same Go, image,
-browser and REST checks. Release publication is separate from local validation;
-an installed CI workflow and registry publication are not supplied by these
-Make targets.
+CI uses native amd64/arm64 runners in a matrix with the same Go, image, browser
+and REST checks; see [continuous integration](#continuous-integration). The Make
+targets export local artifacts without publishing to a registry.
 
 ## Changing the browser or fixtures
 

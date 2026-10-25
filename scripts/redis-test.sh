@@ -5,7 +5,7 @@ container="webcappi-redis-test-$$"
 secrets_dir="$(mktemp -d)"
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true; rm -rf "$secrets_dir"' EXIT
 docker run --detach --name "$container" -p 127.0.0.1::6379 \
-  redis:8.2.2-alpine redis-server --save '' --appendonly no \
+  redis:8.2.2-alpine@sha256:59b6e694653476de2c992937ebe1c64182af4728e54bb49e9b7a6c26614d8933 redis-server --save '' --appendonly no \
   --maxmemory 64mb --maxmemory-policy noeviction >/dev/null
 for attempt in {1..50}; do
   if docker exec "$container" redis-cli ping >/dev/null 2>&1; then break; fi

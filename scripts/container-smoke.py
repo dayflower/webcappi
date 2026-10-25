@@ -18,6 +18,7 @@ import urllib.parse
 from smoke_support import (
     DockerResources,
     HTTPClient,
+    PYTHON_IMAGE,
     ROOT,
     Settings,
     container_base,
@@ -407,7 +408,7 @@ def main():
                     f"{data / 'page'}:/srv:ro",
                     "-w",
                     "/srv",
-                    "python:3.13-alpine",
+                    PYTHON_IMAGE,
                     "python",
                     "/srv/fixture-server.py",
                 )
