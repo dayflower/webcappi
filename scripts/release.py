@@ -109,7 +109,9 @@ def inspect_release(image, version=None, revision=None, missing_ok=False):
     raw = raw_manifest(f"docker://{image}", missing_ok=missing_ok)
     if raw is None:
         return None
-    repository = image.split("@", 1)[0].rsplit(":", 1)[0]
+    repository = image.split("@", 1)[0]
+    if ":" in repository.rsplit("/", 1)[-1]:
+        repository = repository.rsplit(":", 1)[0]
     manifests = {}
     labels_by_arch = {}
 
@@ -261,6 +263,7 @@ def publish(args):
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(summary).open("a") as stream:
             stream.write(f"Published `{image}`\n\nPinned image: `{result}`\n")
+    return {"image": args.image, "digest": existing["digest"]}
 
 
 def main():
@@ -283,8 +286,7 @@ def main():
         )
         outputs = {"exists": str(existing is not None).lower()}
     else:
-        publish(args)
-        return
+        outputs = publish(args)
     for key, value in outputs.items():
         print(f"{key}={value}")
     if args.github_output:
