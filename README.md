@@ -7,143 +7,82 @@ replica and a bounded, process-local cache of validation metadata. PNG bytes are
 never cached by the server.
 Private addresses and cluster Service DNS names are intentionally supported.
 
-## Browser selection and verified startup behavior
+## Intended use and security
 
-The image contains the complete **Chrome for Testing 156.0.8078.47** browser,
-based on Chromium, and Noto fonts for multilingual text, CJK and color emoji.
-The image explicitly installs `fonts-noto-core`, `fonts-noto-cjk`,
-`fonts-noto-extra`, `fonts-noto-color-emoji`, `fonts-noto-mono`,
-`fonts-roboto-unhinted`, and `fonts-liberation`.
-Core supplies script-specific families, extra supplies additional weights and
-widths, and Liberation provides metric-compatible alternatives for common web
-fonts. Fontconfig uses the Debian/package defaults without custom family
-overrides. This does not guarantee coverage of every Unicode character or
-language; qualify representative text in Chromium. The binary is downloaded only at
-image build time. Startup rejects another browser brand/version. The Go build
-uses Go 1.26.10 and chromedp v0.21.0; go.mod records the minimum Go version.
-Both architectures use this same pinned browser version: `linux64` for amd64
-and `linux-arm64` for arm64. Linux ARM64 downloads are provided by
-[Chrome for Testing](https://github.com/GoogleChromeLabs/chrome-for-testing#supported-platforms).
+webcappi is intended for local use and controlled internal networks, with a
+small set of trusted callers. It is not designed for direct Internet exposure
+or use as an anonymous, public screenshot service.
 
-`fonts-noto-mono` supplies normal-width Noto Sans Mono Regular/Bold, which are
-separate from the other weights/widths in `fonts-noto-extra`. Roboto is installed
-via its concrete `fonts-roboto-unhinted` package.
+Chromium executes JavaScript from target pages and posted HTML normally.
+Pages, redirects, scripts and other resources can make requests using the
+browser container's network access, and the selected profile may supply saved
+credentials. A caller can capture internal pages and receive their contents as
+screenshots. Page scripts can also contact internal services or send data they
+can access to external endpoints. Access to this API can therefore expose
+information from the local network or prepared profiles.
 
-Fontconfig resolution and Chromium's actual rendering are different checks.
-The following were measured in the application image using `fc-match` and CDP
-`CSS.getPlatformFontsForNode`. The browser sample uses Latin text, `lang=en`,
-normal weight, one CSS family at a time, a fresh profile and no web fonts:
+Captures can consume significant CPU, memory and network resources. A caller
+or a captured page can overload the capture host or cause it to generate heavy
+traffic toward other services, making it a potential source of denial-of-service
+traffic. Bounded queues, concurrency and deadlines do not bound all activity
+or resource use inside Chromium.
 
-| Requested family | Fontconfig match | Chromium rendered family |
-| --- | --- | --- |
-| Arial / Times New Roman / Courier New | Liberation Sans / Serif / Mono | Liberation Sans / Serif / Mono |
-| Arial Narrow | Liberation Sans Narrow | Liberation Serif (fallback) |
-| Helvetica / Times / Courier | Liberation Sans / Serif / Mono | Liberation Sans / Serif / Mono |
-| Roboto | Roboto | Roboto |
-| Noto Sans Mono / monospace | Noto Sans Mono Regular | Noto Sans Mono Regular |
+PNG images are not cached: unconditional GET and all HTML POST requests perform
+independent captures. Only bounded validation metadata is retained for
+conditional GET responses. This does not provide an image cache for large
+numbers of unrelated callers.
 
-Do not assume an OS alias proves the browser will select a particular font.
-Browser profile settings, CSS fallback lists, text language,
-character coverage and page web fonts also influence actual Chromium rendering.
-Font additions can affect line wrapping and capture layout even without changing
-CSS. Requalify captures after updating the image's font set.
-
-`fc-match` returns the best available match, while Skia additionally checks
-whether a named-family substitution is acceptable before using it. Its
-hardcoded equivalence groups include Arial/Liberation Sans, Times New
-Roman/Liberation Serif and Courier New/Liberation Mono. Blink can also retry
-using built-in alternate names such as Helvetica/Arial, Times/Times New Roman
-and Courier/Courier New. Sources for the pinned browser:
-[Skia substitution checks](https://skia.googlesource.com/skia/+/886e42fda11610a56dd1b22e8697e27f9d1e34f2/src/ports/SkFontConfigInterface_direct.cpp),
-[Blink alternate names](https://chromium.googlesource.com/chromium/src/+/156.0.8078.47/third_party/blink/renderer/platform/fonts/alternate_font_family.h),
-[Blink alternate-name retry](https://chromium.googlesource.com/chromium/src/+/156.0.8078.47/third_party/blink/renderer/platform/fonts/font_platform_data_cache.cc).
-
-Use the full browser, not `chrome-headless-shell`. Unified headless shares the
-normal browser implementation and supports extensions. Ordinary branded Chrome
-has removed `--load-extension`; Chromium and Chrome for Testing retain it.
-Sources: [headless modes](https://developer.chrome.com/docs/automation-and-testing/headless),
-[extension testing](https://developer.chrome.com/docs/extensions/how-to/test/end-to-end-testing),
-[Chrome extension flag announcement](https://groups.google.com/a/chromium.org/g/chromium-extensions/c/1-g8EFx2BBY/m/my-groups),
-[version availability](https://googlechromelabs.github.io/chrome-for-testing/).
-
-The allocator explicitly overrides chromedp's defaults:
-
-| Setting | Value and reason |
-| --- | --- |
-| `headless` | `new`, the full browser's unified headless mode |
-| `disable-extensions` | `false`, removing the default disabling flag |
-| `user-data-dir` | A unique writable clone of the complete template |
-| `profile-directory` | The configured individual profile, usually `Default` |
-| `no-first-run`, `no-default-browser-check` | Browser-level first-run suppression |
-| `password-store` | `basic`, consistently during preparation and capture |
-| `disable-dev-shm-usage` | `false`; provision `/dev/shm` explicitly |
-| `force-device-scale-factor`, CDP device scale | `1` |
-| `no-sandbox` | Explicit boolean from configuration, default `false` |
-
-The implementation was checked against the pinned
-[allocator source](https://github.com/chromedp/chromedp/blob/v0.21.0/allocate.go)
-and its context/cancellation implementation, rather than assuming older API
-behavior. This release uses chromedp's local pipe transport, without exposing a
-remote debugging TCP port. Linux process groups and cancellation terminate
-Chromium descendants; cleanup also checks the unique user-data-dir in `/proc`.
-
-**Do not use `--load-extension` for each capture.** Our local fixture demonstrated
-that this command-line installation repeats the initial installation event on
-cloned profiles. CDP `Extensions.loadUnpacked` also did not provide the desired
-restart behavior in this browser. Instead, install through the visible browser's
-**Developer mode → Load unpacked** flow once and let Chromium reload its saved
-registration at startup. Runtime does not pass an installation flag or call an
-installation API. The real-browser test exercises the native folder picker.
+Keep the API accessible only to trusted callers. Shared Bearer authentication
+controls API access, but does not restrict which reachable sites a token holder
+can capture or provide per-caller authorization. Restrict ingress and egress
+with network policy, apply container resource limits, and use an authentication
+gateway when finer access control is needed. The service intentionally accepts
+private addresses and does not provide an SSRF prevention boundary.
 
 ## Quick start
 
-Build and run automated verification without a personal profile or external site:
+Docker with Buildx is required. The host must support Chromium's sandbox; see
+[container requirements](#docker-and-kubernetes) if startup reports
+`No usable sandbox`.
+
+Build the application image and create a configuration using the defaults:
 
 ```sh
-go version
-make test
 make image
-make browser-test
-python3 scripts/container-smoke.py
+printf '{}\n' > config.json
+docker run --rm --name webcappi -p 127.0.0.1:8080:8080 \
+  --read-only --shm-size=512m \
+  --tmpfs /work:uid=10001,gid=10001,mode=700 --tmpfs /tmp \
+  -v "$PWD/config.json:/etc/webcappi/config.json:ro" \
+  webcappi:dev
 ```
 
-Use a Go 1.25+ toolchain; Go 1.26.10 is the tested build toolchain. On an older Go
-installation, `GOTOOLCHAIN=go1.26.10 make test` selects the tested toolchain.
-Docker is required for the image/browser tests; Python 3 is required for the REST
-smoke test. Browser tests use only synthetic state, an ephemeral loopback page,
-Xvfb and a minimal Manifest V3 extension. They explicitly disable the browser
-sandbox inside disposable test containers on hosts whose default container
-policy does not support it. This is separate from production defaults.
+In another terminal, capture a page:
 
-The tests export `artifacts/extension.png`, `artifacts/html.png`,
-`artifacts/html-loopback.png`, `artifacts/api.png`, `artifacts/api-html.png`,
-`artifacts/api-html-file.png`, `artifacts/api-html-loopback.png`, and a synthetic User Data Directory
-at `artifacts/user-data`. Remove the old synthetic directory
-before exporting another one; the script will not overwrite it. The fixture
-extension is installed at `/src/testdata/extension` in the test container, so its
-synthetic profile is usable only with that same path. It is not the production
-bundle prepared by the following workflow.
+```sh
+curl --get http://localhost:8080/capture \
+  --data-urlencode url=https://example.com/ \
+  --output capture.png
+```
 
-To test a specific architecture, set `PLATFORM=linux/amd64` or
-`PLATFORM=linux/arm64`. The browser test compiles its test binary for that
-platform and uses the corresponding browser image. Set
-`WEBCAPPI_ARTIFACTS_DIR=artifacts/arm64` (or `artifacts/amd64`) to keep synthetic
-profiles and images separate. The REST smoke test accepts the same variables
-and `WEBCAPPI_IMAGE` to select the application image. It checks that an explicit
-platform agrees with that image. Running foreign-architecture containers needs
-working runtime emulation; native runners are preferable for browser tests.
+This starts with an automatically generated, extension-free profile and no API
+authentication. The published port is bound to loopback. Configure
+[authentication](#api-authentication) before exposing the API to other callers.
+The public guide at `http://localhost:8080/` has capture examples.
 
-The screenshot fixture fits an 800 x 480 viewport and contains seven writing
-system groups plus symbols: Latin (including accented text and Vietnamese),
-CJK (Japanese, simplified/traditional Chinese and Korean), RTL (Arabic and
-Hebrew mixed with Latin text and digits), Thai, Devanagari (Hindi), Cyrillic
-(Russian), and Greek, plus currency signs, arrows, mathematical symbols and
-color emoji. It uses generic `sans-serif` with per-sample `lang` and RTL `dir`
-attributes, so the browser selects the installed system fonts.
-`TestMultilingualRenderedFonts` loads the same local page, checks that it fits
-the viewport, and inspects actual rendered font families through CDP.
-The PNG artifacts are available for visual inspection; glyph shapes are not
-compared against reference images.
+For a single capture without starting the API server, use the same image's
+[`capture` command](#one-shot-capture-with-docker).
+
+## Browser and fonts
+
+The image includes full **Chrome for Testing 156.0.8078.47**, extensions in
+unified headless mode, and Noto fonts for multilingual text, CJK and color emoji.
+Both supported architectures use the same browser version. No browser is
+downloaded at runtime, and startup rejects a different browser brand/version.
+Fonts and CSS fallback influence layout; qualify representative pages after
+changing the image or profile. Installed fonts do not guarantee complete
+language or Unicode coverage. Detailed font measurements and browser rationale
+are in the [browser notes](notes/BROWSER.md).
 
 ## Start without a prepared profile
 
@@ -289,29 +228,75 @@ extension behavior. webcappi always creates its own capture target and brings
 that target forward before the final asset/frame check, so another tab is never
 mistaken for the requested page.
 
-## Local CLI and API
+## One-shot capture with Docker
 
-For native Linux execution, use the same Chrome for Testing binary, dependencies
-and fonts as the image, edit absolute paths in the configuration and descriptor,
-and prepare the profile at those exact extension paths. The container is the
-preferred way to keep these dependencies consistent.
+The same Docker image supports both a long-running API server (`serve`) and a
+single capture (`capture`). Use `capture` for ad hoc screenshots, scripts or CI
+jobs: it starts Chromium, saves a PNG and exits, without starting an HTTP server.
+The image supplies the pinned browser, fonts and libraries, so no native browser
+environment is needed on the host.
 
-```sh
-make build
-cp config.example.json config.json
-# Match profiles.default to the generated bundle.json.
-# For an initialized bundle: set extensions to [] and omit ready_selectors.
-# Create the configured token file, or omit auth to disable HTTP authentication.
-./bin/webcappi check -config config.json
-./bin/webcappi serve -config config.json
-./bin/webcappi capture -config config.json -url http://page-service:8000/
+`capture` accepts an HTTP(S) URL through `-url` and writes the PNG to `-out`.
+To render raw HTML, use the [HTTP API](#http-api).
+Native Linux setup and command examples are in the
+[development guide](notes/DEVELOP.md#toolchain-and-local-build).
+
+The command syntax is:
+
+```text
+webcappi capture -url URL [flags]
 ```
 
-`check` validates configuration, bundle descriptors, browser version, scratch
-access and a real browser launch on each profile clone. The CLI capture command
-shares input validation with the HTTP server, calls the capture service directly
-and saves a new PNG to the output file. `version` prints the supported browser
-version.
+| Flag | Purpose | Default |
+| --- | --- | --- |
+| `-url URL` | HTTP(S) URL to capture; required | None |
+| `-config PATH` | Configuration file | `config.json` |
+| `-out PATH` | PNG output file | `capture.png` |
+| `-width N` | Viewport width in pixels | `1280` |
+| `-height N` | Viewport height in pixels | `720` |
+| `-output-width N` | PNG canvas width in pixels | Viewport width |
+| `-output-height N` | PNG canvas height in pixels | Viewport height |
+| `-profile NAME` | Profile name from the configuration | `default` |
+| `-ready-selector CSS` | Wait for an element matching this CSS selector | No additional selector |
+
+Output dimensions resize and center-crop the captured viewport; they do not
+change page layout. Select a configured profile with `-profile` to use its
+extensions or saved state. `-ready-selector` adds a page readiness check to the
+configured profile selectors. Use `webcappi capture -help` to print the flags.
+
+After building the image, create a default configuration and run:
+
+```sh
+printf '{}\n' > capture-config.json
+docker run --name webcappi-capture --shm-size=512m --tmpfs /tmp \
+  -v "$PWD/capture-config.json:/etc/webcappi/config.json:ro" \
+  webcappi:dev webcappi capture -config /etc/webcappi/config.json \
+  -url https://example.com/ -out /work/capture.png
+```
+
+Here, `webcappi:dev` is the Docker image; the following `webcappi capture` runs
+the executable's `capture` subcommand. `-config` and `-out` refer to paths inside
+the container. Set `-out` to a writable location such as `/work/capture.png`.
+Append `-width 1200 -height 800` to set the viewport and
+`-output-width 600 -output-height 600` to produce a square PNG.
+
+After a successful capture, copy the PNG to the host and remove the container:
+
+```sh
+docker cp webcappi-capture:/work/capture.png ./capture.png
+docker rm webcappi-capture
+```
+
+This uses an automatically generated, extension-free profile. The container's
+writable `/work` directory retains the output after exit until `docker rm`;
+omit `--rm` and a `/work` tmpfs so `docker cp` can retrieve it. Remove a failed
+container before retrying with the same name. Chromium's sandbox stays enabled
+and requires the same [host support](#docker-and-kubernetes) as the API server.
+
+## HTTP API
+
+Start the API server as shown in the [quick start](#quick-start), then request a
+capture with an HTTP client. For a server with Bearer authentication enabled:
 
 ```sh
 curl --get http://localhost:8080/capture \
@@ -379,7 +364,6 @@ content-script matches for `file:` URLs. Loopback mode requires content scripts
 to match HTTP on `127.0.0.1`; HTTPS-only or domain-specific scripts may not run.
 The pinned browser's real-browser tests check `isSecureContext` in both modes;
 secure-context status does not remove API-specific scheme or origin restrictions.
-The local CLI continues to accept URLs through `-url`.
 
 ### API authentication
 
@@ -434,7 +418,8 @@ the supplied manifest.
 
 ### Capture parameters and responses
 
-GET requires an absolute HTTP(S) `url`; all other query parameters are optional.
+GET requires an absolute HTTP(S) `url` of at most 8192 bytes; all other query
+parameters are optional.
 HTML POST requires no query parameters. Omitting `profile` selects the
 `default` profile (configured or generated), as does omitting CLI `-profile`. Specify another configured
 name to select a different profile. An explicitly empty or unknown profile name
@@ -447,8 +432,8 @@ defaults to the corresponding
 viewport dimension. The viewport image is resized proportionally to fill the
 output canvas, then cropped around the center. Different aspect ratios remove
 equal portions from the left/right or top/bottom, without stretching or adding
-padding. Scaling can enlarge or shrink the image, using bilinear filtering from
-`golang.org/x/image/draw` after capture by default. Set the server configuration
+padding. Scaling can enlarge or shrink the image, using bilinear filtering after
+capture by default. Set the server configuration
 `resize_algorithm` to `bilinear`, `catmull_rom`, `approx_bilinear` or
 `nearest_neighbor`. `catmull_rom` uses bicubic filtering; `approx_bilinear` uses
 bilinear interpolation when enlarging and a faster approximation when shrinking;
@@ -477,7 +462,7 @@ oversized values are rejected with HTTP 400.
 Configuration limits must accommodate the default viewport: `max_width` must
 be at least 1280, `max_height` at least 720 and `max_pixels` at least 921600.
 
-Optional `ready_selector` waits for
+Optional `ready_selector` (at most 1024 bytes) waits for
 an element in the page;
 profile `ready_selectors` lists readiness signals, for example one per extension:
 
@@ -505,7 +490,8 @@ its delay. Assets and readiness signals are not rechecked after the delay.
 
 GET and POST are accepted on `/capture`; repeated
 and unknown query parameters, credentials in URLs, unsupported schemes and excessive dimensions
-are rejected. URL fragments remain part of the capture URL and cache key.
+are rejected. The encoded HTTP query is limited to 16 KiB. URL fragments remain
+part of the capture URL and cache key.
 
 Errors are JSON with an `error` field and `Cache-Control: no-store`: 400 for input,
 404 for an unknown endpoint, 405 for another method, 413 for an oversized HTML
@@ -655,56 +641,10 @@ make image PLATFORM=linux/amd64 IMAGE=webcappi:dev-amd64
 make image PLATFORM=linux/arm64 IMAGE=webcappi:dev-arm64
 ```
 
-Docker's `--platform` determines both the base image/browser architecture and
-the Go executable architecture. The Go stage runs on `BUILDPLATFORM` and
-cross-compiles with `TARGETOS`/`TARGETARCH`, so Go compilation does not require
-QEMU. Browser dependency installation and its build-time version check run for
-the target platform and require a native BuildKit worker or working emulation.
-Only `linux/amd64` and `linux/arm64` runtime images are supported.
-
-Export both CLI executables without running target-platform build steps:
-
-```sh
-make binaries
-# artifacts/binaries/linux_amd64/webcappi
-# artifacts/binaries/linux_arm64/webcappi
-```
-
-With a builder capable of both target platforms, export a multi-platform OCI
-archive without publishing anything:
-
-```sh
-make image-multi IMAGE=webcappi:dev
-# artifacts/webcappi.oci.tar
-```
-
-`PLATFORMS` overrides the default `linux/amd64,linux/arm64` list. Select a
-configured builder through `BUILDX_BUILDER` when needed. A docker-container
-builder can be created with
-`docker buildx create --name webcappi-builder --driver docker-container --bootstrap`.
-Some hosts also need emulation configured by their administrator; do not assume
-cross-compiling Go makes foreign browser/container execution work.
-See Docker's [multi-platform build documentation](https://docs.docker.com/build/building/multi-platform/).
-
-For future CI/CD, use native Linux amd64 and arm64 runners in a matrix. Run the
-same steps in each job, substituting that job's architecture:
-
-```sh
-export PLATFORM=linux/arm64
-export WEBCAPPI_IMAGE=webcappi:ci-arm64
-export WEBCAPPI_ARTIFACTS_DIR=artifacts/arm64
-make test
-make image IMAGE="$WEBCAPPI_IMAGE"
-make browser-test
-python3 scripts/container-smoke.py
-```
-
-This verifies each architecture's actual extension/profile lifecycle, fonts
-and REST behavior as well as its image build. After both jobs pass, a release
-job with registry credentials can publish a single multi-platform image using
-`docker buildx build --platform linux/amd64,linux/arm64 --tag REGISTRY/IMAGE:TAG --push .`
-on a builder supporting both platforms. Registry publication and an installed
-CI workflow are not part of these local build commands.
+The platform selects both the application and browser architecture. Running
+foreign-architecture containers requires working runtime emulation; native
+runners are preferable. For CLI exports and multi-platform image builds, see
+[build artifacts](notes/DEVELOP.md#build-artifacts-and-platforms).
 
 Configure authentication as needed. With automatic profile generation, omit
 `profiles` and run without a bundle mount:
@@ -721,12 +661,10 @@ docker run --rm --name webcappi -p 127.0.0.1:8080:8080 \
 To use prepared profiles, add a read-only `/bundles` mount and matching profile
 descriptors. `config.example.json` illustrates those optional settings.
 
-The runtime uses UID/GID **10001**; it must read configuration and any supplied bundles and
-write `/work`, `/tmp` and `/dev/shm`. Each capture has private HOME, XDG config/cache
-and a profile copy under its work directory. Browser temporary files use a
-separate private `/tmp/wc-*` directory, removed after browser exit; the short path
-avoids Chromium's Unix socket path-length limit. Tini reaps orphaned descendants. The final image has no
-runtime download step and no Go compiler. Multilingual fonts and Chromium's shared
+The runtime uses UID/GID **10001**; it must read configuration and any supplied
+bundles and write `/work`, `/tmp` and `/dev/shm`. Browser processes and temporary
+capture data are cleaned up after each job. The final image has no runtime
+download step and no Go compiler. Multilingual fonts and Chromium's shared
 libraries are installed at build time. Base OS package updates are not a
 byte-for-byte reproducibility guarantee; promote the built image by digest.
 For host bind mounts, explicitly grant UID 10001 read/traverse access to the
@@ -784,25 +722,18 @@ target API image. For more profiles, add artifact directories, initContainer
 copies and descriptors. The example uses Recreate to avoid overlapping
 replicas on updates.
 
-This is an internal capture service with intentional access to private/cluster
-addresses. Optional shared Bearer authentication controls API access; it does
-not provide per-caller authorization or an SSRF boundary. Restrict ingress/egress
-using your network policy and use an authentication gateway when more granular
-access control is needed. A captured page's requests, redirects and extensions
-inherit the browser pod's network reachability and prepared profile credentials.
-Disk, memory, CPU and target-page behavior still require container resource
-limits; PNG/metadata limits do not bound all memory consumed by Chromium.
-
 ## Update a browser/extension/profile bundle
 
 1. Stage a new bundle; retain extension public keys and absolute runtime paths.
-2. For a browser update, update the pinned version in the Dockerfile, Go constant,
-   documentation and test scripts. Build the new browser image.
+2. Build or obtain the API image with the desired pinned browser. Maintainers
+   changing the pin should follow the
+   [browser update checks](notes/DEVELOP.md#changing-the-browser-or-fixtures).
 3. Open a copy of the previous template with that exact image's headed browser;
    apply extension changes/settings/migrations, finish any new onboarding and
    close normally. Keep the previous bundle available for rollback.
-4. Keep `bundle.json` and the configured descriptor in sync. Re-run fixture
-   tests and qualification tests for real extensions.
+4. Keep `bundle.json` and the configured descriptor in sync. Repeat
+   qualification on representative pages and run `webcappi check` with the
+   target configuration.
 5. Build/promote API and profile images with immutable tags/digests. Roll out a
    matching pair. Never migrate the live template or reuse a capture's mutated
    state as the new template.
@@ -812,128 +743,27 @@ does not auto-update at runtime. Restarts discard the metadata cache. Independen
 replicas have independent validation metadata and browser concurrency limits;
 this release does not coordinate them.
 
-## Verification and known limits
+## Support and limitations
 
-The 2026-10-23 verification run passed `go test -race ./...`, `go vet ./...`,
-native binary/image builds, the real-browser lifecycle test and the actual REST
-container smoke test. The profile artifact image was built and its init-style
-copy was exercised as UID/GID 10001 with a read-only root. The Kubernetes objects
-passed `kubectl create --dry-run=client --validate=false`; no resources were
-created in a cluster by this verification.
+Linux amd64 browser/extension/profile/API behavior has been verified with the
+included synthetic fixture. Both amd64 and arm64 CLI binaries and images have
+been built, but arm64 browser/profile/API runtime remains unverified. Qualify
+arm64 deployments on a native runner or with working runtime emulation.
 
-The 2026-10-24 font update rebuilt the application image and passed the REST
-container smoke test. CDP platform-font inspection on a local synthetic page
-confirmed Noto fonts for representative Japanese, simplified/traditional
-Chinese, Korean, Arabic, Hebrew, Devanagari, Thai, Vietnamese, Myanmar and Khmer
-text, and Noto Color Emoji for representative emoji. This checks representative
-strings, not complete language or Unicode coverage.
+The development host does not support sandbox-enabled container execution under
+its stock policy; disposable tests use an explicit sandbox exception. Verify the
+production host's sandbox support. Third-party extensions, native messaging,
+cross-platform profile migration and manual display forwarding require
+validation in the target environment. The supplied Kubernetes manifest is an
+example; no live cluster rollout was verified.
 
-The Noto Mono and Roboto font set passed the REST container
-smoke test, `go test -race ./...` and `go vet ./...`. The real-browser
-`TestRenderedFontFamilies` checks the measured families above, including the
-Liberation substitutions, Roboto and
-normal-width `NotoSansMono-Regular` for both named and generic monospace text.
+Full-page capture, device scale factors other than one, PDF, a dedicated
+JavaScript execution API, custom request headers and state write-back are outside
+this release. Page scripts still execute during capture as described above.
 
-The multilingual screenshot fixture and `TestMultilingualRenderedFonts` also
-passed in the application container. The expanded page passed the real-browser
-extension/profile lifecycle test and REST smoke test, producing updated PNGs.
-
-The 2026-10-24 multi-architecture verification built both runtime images and
-exported both CLI executables through Docker. ELF inspection confirmed x86-64
-and AArch64 binaries. `make image-multi` produced an OCI archive whose image
-index and configuration blobs contain both `linux/amd64` and `linux/arm64`.
-The ARM64 image's build-time browser version command ran under BuildKit's
-QEMU emulation; its browser/profile/REST runtime behavior was not tested.
-The amd64 browser tests and REST smoke test passed with explicit platform,
-image and artifact-directory settings. Go race tests, vet, script syntax checks
-and Dockerfile build checks passed. No images were published to a registry.
-
-The Bearer authentication update passed Go 1.26.10 race tests and vet, the amd64
-image build, real-browser tests and the authenticated REST container smoke test.
-Both amd64 and arm64 CLI binaries were built and their ELF architectures checked.
-The Kubernetes manifest passed client-side dry-run validation. The current
-builder could not execute ARM64 build steps (`exec format error`), so this
-update's multi-platform image build did not complete and ARM64 runtime behavior
-was not verified. No cluster resources were created.
-
-Automatic default profiles passed Go 1.26.10 race tests and vet, the amd64 image
-build and real-browser tests. The container smoke test verifies omitted profiles,
-named-only profiles, configured-default precedence, immutable generated templates,
-readiness after template loss, and cleanup on SIGTERM and `check` exit. Cleanup is
-checked while the container and its scratch volume remain alive. Both CLI
-architectures build; the current builder's ARM64 execution limitation described
-above still prevents multi-platform image and ARM64 runtime verification.
-
-Independent viewport/output sizes passed Go 1.26.10 race tests and vet, the amd64
-image build, real-browser tests and container smoke tests, including REST, HTML
-POST and CLI resizing. Pixel checks verify unchanged responsive layout and
-proportional center cropping; unit tests cover both crop axes, up/downscaling,
-extreme aspect ratios, validation and cache separation. All four resize filters
-passed these checks. Container smoke tests exercise the default bilinear API
-filter and explicit Catmull-Rom, approximate bilinear and nearest-neighbor CLI
-configurations. GET, HTML POST and CLI smoke tests also verify the 1280 x 720
-default dimensions. CLI binaries for both architectures built successfully, and ELF
-inspection confirmed their architectures. The multi-platform image build
-failed at ARM64 execution with `exec format error`; ARM64 runtime behavior was
-not verified.
-
-The metadata-only conditional GET update passed Go 1.26.10 race tests and vet,
-the amd64 image build, real-browser tests and REST container smoke tests. Tests
-verify fresh-metadata 304s without a browser, source ETag/Last-Modified validation
-without PNG generation, validator-free expiry with recapture, independent
-unconditional captures and metadata limits. Both CLI architectures built and
-passed ELF architecture inspection. The multi-platform image build still fails
-at ARM64 execution with `exec format error`; ARM64 runtime remains unverified.
-Browser-test startup waits and failure cleanup were hardened for loaded hosts;
-production capture deadlines and sandbox defaults were preserved.
-
-The 2026-10-25 refactoring regression review passed Go 1.26.10 race tests and vet,
-the amd64 image build, real-browser/CDP font tests, REST/CLI/profile smoke tests
-and failure/shutdown cleanup probes. Both CLI exports passed ELF inspection.
-A temporary docker-container BuildKit builder with its bundled QEMU emulator
-produced the dual-platform OCI archive; its index/configurations contain both
-targets, and each image's executable matches the corresponding CLI export.
-An initial smoke timeout during the concurrent build passed on an isolated retry
-with unchanged deadlines. ARM64 Docker execution still fails with `exec format
-error`, so ARM64 browser/extension/profile/API runtime remains unverified.
-The temporary builder and test resources were removed; production settings are
-unchanged.
-
-Implemented tests cover exact PNG dimensions, Japanese rendering, both HTML
-source modes and their secure-context status, a pixel-level
-extension marker, real headed unpacked installation, two independent headless
-clones retaining extension storage without another initial welcome, unrelated
-foreground tabs, immutable templates, cleanup on timeout/navigation error and
-absence of surviving Chromium processes referring to private work directories.
-The fixture deliberately opens extra tabs on normal page messages as well as
-initial installation, so target selection is exercised.
-
-Unit/integration tests cover input and bundle validation, LRU byte/entry limits,
-metadata freshness and content tags, source revalidation, bounded
-admission/queueing, independent cancellation, deadlines, shutdown, HTTP errors
-and health/readiness.
-`go test -race ./...` and `go vet ./...` are the standard checks.
-
-`scripts/container-smoke.py` runs the actual REST image with a read-only root,
-read-only template/extension mounts, writable tmpfs and a local page in another
-container addressed through private Docker DNS. It checks PNG output,
-metadata-based conditional responses without another capture, independent
-unconditional captures, Bearer authentication including conditional responses
-and unauthenticated probes, expiry and source validation after page changes,
-validator-free fallback, input/timeout/load errors, scratch cleanup, template
-integrity and normal SIGTERM exit. HTML POST tests check the default file mode,
-explicit file/loopback selection, size limits, and generation on every request.
-It does not contact an external page.
-
-The supplied Kubernetes manifest is an example, not evidence of a live cluster
-rollout. Real third-party extensions, native messaging hosts, cross-platform
-profile migration, sandbox-enabled container execution on this host and desktop
-display forwarding need environment-specific validation. Runtime verification
-on this host uses Linux amd64 and the included Manifest V3 fixture; ARM64
-browser/profile/REST runtime tests require a native ARM64 runner or working
-runtime emulation. Full-page
-capture, scale factors other than one, PDF, arbitrary caller JavaScript, custom
-request headers and state write-back are intentionally outside this release.
+For source changes and regression verification, see the
+[development guide](notes/DEVELOP.md). Browser implementation details and measured
+font behavior are documented in the [browser notes](notes/BROWSER.md).
 
 ## License
 

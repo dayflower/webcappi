@@ -1,6 +1,7 @@
 # AGENTS.md
 
-See `README.md` for architecture, configuration and operating procedures.
+See `README.md` for configuration and operating procedures, `notes/DEVELOP.md`
+for architecture and validation, and `notes/BROWSER.md` for browser details.
 
 ## Constraints
 
@@ -27,7 +28,7 @@ Use the Go toolchain pinned in `Dockerfile`. Run checks relevant to the change:
 - Browser, profile, extension, font or fixture: `make image`,
   `make browser-test`, then `python3 scripts/container-smoke.py`.
 - Build: `make binaries` and `make image-multi` for both architectures on a
-  suitable BuildKit builder. See the README for platform/artifact settings.
+  suitable BuildKit builder. See `notes/DEVELOP.md` for platform/artifact settings.
 
 `make test` alone skips real-browser tests. Distinguish build verification from
 runtime verification, and report untested platforms explicitly.
