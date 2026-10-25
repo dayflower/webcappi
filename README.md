@@ -887,6 +887,18 @@ at ARM64 execution with `exec format error`; ARM64 runtime remains unverified.
 Browser-test startup waits and failure cleanup were hardened for loaded hosts;
 production capture deadlines and sandbox defaults were preserved.
 
+The 2026-10-25 refactoring regression review passed Go 1.26.10 race tests and vet,
+the amd64 image build, real-browser/CDP font tests, REST/CLI/profile smoke tests
+and failure/shutdown cleanup probes. Both CLI exports passed ELF inspection.
+A temporary docker-container BuildKit builder with its bundled QEMU emulator
+produced the dual-platform OCI archive; its index/configurations contain both
+targets, and each image's executable matches the corresponding CLI export.
+An initial smoke timeout during the concurrent build passed on an isolated retry
+with unchanged deadlines. ARM64 Docker execution still fails with `exec format
+error`, so ARM64 browser/extension/profile/API runtime remains unverified.
+The temporary builder and test resources were removed; production settings are
+unchanged.
+
 Implemented tests cover exact PNG dimensions, Japanese rendering, both HTML
 source modes and their secure-context status, a pixel-level
 extension marker, real headed unpacked installation, two independent headless
