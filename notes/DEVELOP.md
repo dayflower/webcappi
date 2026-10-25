@@ -64,7 +64,8 @@ uv tool install ruff==0.16.8
 
 Add `$(go env GOPATH)/bin` and the uv tool executable directory to `PATH`.
 Staticcheck is built with the pinned Go toolchain. Ruff is a development tool;
-the smoke scripts themselves only need Python 3 and Docker.
+the container smoke scripts only need Python 3 and Docker. The chart checker
+also needs the pinned PyYAML dependency described below.
 
 ```sh
 GOTOOLCHAIN=go1.26.10 make format-check
@@ -702,3 +703,201 @@ unchanged; the existing Go static checks used Go **1.26.10**.
 Probe assets, the registry log and `recovery-verification.json` are under
 `artifacts/github-release-validation/`. The disposable Registry and its storage
 were removed; no GitHub Release, tag or GHCR package was created or changed.
+
+## Local Helm chart checks
+
+The [chart guide](../charts/webcappi/README.md) documents local installation,
+external Redis and prepared bundles. This phase supplies a ClusterIP Service;
+Ingress, HTTPRoute and chart publication are separate phases.
+
+Use the Dockerfile's Go toolchain, Docker, and Python with PyYAML **6.0.2**.
+Create a virtual environment and install the Python dependency, then install the
+checksummed tools in the ignored `bin/chart-tools/` directory:
+
+```sh
+python3 -m venv bin/chart-python
+. bin/chart-python/bin/activate
+python3 -m pip install PyYAML==6.0.2
+make chart-tools
+GOTOOLCHAIN=go1.26.10 make chart-check
+GOTOOLCHAIN=go1.26.10 make chart-package
+```
+
+An existing uv installation can instead create an environment under `bin/`:
+`uv venv --python /usr/bin/python3 bin/chart-python`, followed by
+`uv pip install --python bin/chart-python/bin/python PyYAML==6.0.2`.
+Add its `bin/` directory to PATH for Make's Python commands. Tool installation
+needs network access; the chart check uses local pinned standalone Kubernetes
+schemas after installation. `chart-tools` verifies SHA-256 values embedded in
+`scripts/chart-tools.py` before extracting individual executables. It supports
+Linux amd64 and arm64 and does not modify the active kubeconfig.
+
+The fixed validation stack is Helm **4.3.0**, kind **0.33.0**, Kubernetes/kubectl
+**1.36.4**, kubeconform **0.7.0**, and Kubernetes JSON schemas from revision
+`f7d855e49c34b039c9ef2196444910275e31e09e`. The kind node is pinned to the
+multi-platform index `sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed`.
+Fixture images reuse the digest-pinned Python **3.13-alpine** and Redis
+**8.2.2-alpine** constants in `scripts/smoke_support.py`. The setup script pins
+binary/archive hashes for both supported host architectures. There is no
+controller or Gateway API dependency in this phase.
+
+`chart-check` runs strict Helm lint, valid/invalid rendering cases, strict
+Kubernetes schemas with no missing-schema skips, and the application's actual
+`config.Load` against every rendered JSON configuration. It checks zero-value
+capacities, bounds, JSON escaping, sandbox selection, credentials/TLS, replica
+strategies, digest selection, profile paths/counts/config size, checksums and
+release isolation.
+It also exports `artifacts/charts/webcappi-<version>.tgz` and compares all
+packaged files to the source (parsed metadata for Helm-normalized Chart.yaml).
+`chart-package` performs the same validation before packaging.
+
+Run runtime acceptance on a native Linux host. Select the sandbox mode
+explicitly when opting out:
+
+```sh
+GOTOOLCHAIN=go1.26.10 make image IMAGE=webcappi:helm-check
+make helm-smoke IMAGE=webcappi:helm-check HELM_SMOKE_SANDBOX=disabled
+```
+
+The default is `HELM_SMOKE_SANDBOX=enabled`. Run that mode on hosts whose
+node/runtime policy permits Chromium's sandbox. The helper accepts only
+`enabled` and `disabled` (`--sandbox` when invoking the script directly); it
+does not retry in another mode after a failure.
+
+The smoke helper requires an explicit local image tag/digest matching the native
+host architecture. It creates a uniquely named kind cluster, kubeconfig and
+Helm configuration/cache directories, independently of operator Helm/Kubernetes
+overrides. It uses kind's default shared Docker network and ignores an inherited
+`KIND_EXPERIMENTAL_DOCKER_NETWORK` override. The helper does not create or delete
+Docker networks directly; the shared network remains available after cluster
+deletion. It loads the image, creates synthetic fixture
+resources, and exercises Service-based authenticated captures, probes, two
+releases in one namespace, memory config changes/restart, authenticated external
+Redis, scaling, cross-Pod metadata reuse, outage readiness, automatic and
+prepared profiles, image/bundle and generation changes, rollback and uninstall.
+Prepared bundles are generated using the selected sandbox mode and built from
+the local application image. Since `init-profile` does not accept a server
+configuration, disabled-mode tests use a temporary browser wrapper that adds
+`--no-sandbox` only while preparing the disposable fixture. Enabled-mode tests
+use the real browser directly. Hidden files, ownership, modes and read-only
+immutable bundle contents are checked. Test image aliases, the cluster and temporary
+files are cleaned on success, failure and SIGINT/SIGTERM. The helper never uses
+a shared production Redis or cluster.
+
+Diagnostics and screenshots are written to `artifacts/helm-enabled/` or
+`artifacts/helm-disabled/` by default. `WEBCAPPI_ARTIFACTS_DIR` changes the parent
+directory; `--artifacts` selects an exact directory. CI places the mode-specific
+directory under its existing browser artifact directory. `result.json` records
+the selected sandbox mode, native image platform and success only after
+owned-resource cleanup; failures retain Pod logs and resource/event
+snapshots without exporting Secret contents. Reuse a clean artifact directory
+for each run to avoid mixing evidence from different executions.
+
+The chart defaults to `browser.noSandbox=false`; operators can explicitly set it
+to `true` to disable Chromium's sandbox. Both modes are checked statically,
+including the generated JSON, config checksum and unchanged container security
+settings. See the chart guide for installation and upgrade examples. There is
+no automatic opt-out after startup failure. Custom seccomp/AppArmor profile
+support and environment provisioning remain separate work.
+
+The verification workflow adds chart checks and native amd64/arm64 Helm
+smoke runs to the existing browser matrix. CI explicitly selects
+`HELM_SMOKE_SANDBOX=disabled` and uploads the mode-specific result and
+diagnostics. This qualifies only disabled-mode operation when those jobs pass.
+Sandbox-enabled runner/node policy provisioning and runtime qualification
+remain separate work. Workflow syntax validation does not establish
+GitHub-hosted runner compatibility.
+
+### Helm chart verification
+
+Executed on **2026-10-25 (Asia/Tokyo)** in a working tree based on
+`553826de6f90e9c871be7b75060cbea946e5fa0a`. Go **1.26.10**, full Chrome for
+Testing **156.0.8078.47**, Docker client/server **29.9.1**, Helm **4.3.0**, kind
+**0.33.0**, Kubernetes/kubectl **1.36.4**, kubeconform **0.7.0**, Ruff
+**0.16.8** and Actionlint **v1.7.12** were used. Static chart validation used
+PyYAML **6.0.2** in an isolated CPython **3.13.16** environment; earlier local
+iterations used system Python **3.12.3** and PyYAML **6.0.1**.
+
+| Scope | Result |
+| --- | --- |
+| Chart and package | `make chart-check` passed: 18 valid configurations, 36 rejected configurations, 54 Kubernetes resources validated without skips, strict Go JSON loading and package content comparison. |
+| Python and workflow checks | All 42 Python tests, `make format-check lint` and Actionlint passed. The unit tests include owned-resource cleanup, asynchronous Pod deletion and image-inspection failures. |
+| Go and existing runtime | `make test` with race detection and `go vet ./...` passed; unchanged Go tests reused cached results. `make image IMAGE=webcappi:helm-phase1`, `make browser-test` and `python3 scripts/container-smoke.py` passed on linux/amd64. Browser tests exercised the existing CDP font and extension/profile suites. Those existing disposable suites retain their documented sandbox exception. |
+| Helm production runtime | The owned linux/amd64 kind cluster reached the memory Deployment, but Chromium failed startup with `No usable sandbox!`; Helm install timed out without a Ready API Pod. Service captures, Redis sharing, prepared bundle and upgrade/rollback acceptance in this suite remain **unverified**. The chart's sandbox and security constraints were preserved. |
+| Cleanup | Failed-install diagnostics were retained and the cluster/kubeconfig removed. Before the default-network change, a separate one-off real SIGTERM probe against the maintained Cluster helper confirmed dedicated cluster, network and temporary-directory removal. The current helper retains kind's shared network. Maintained unit tests also cover creation failure, interruption, diagnostics failure, ambient configuration isolation and cleanup errors. |
+| Other platforms and CI | Native arm64 chart runtime and GitHub-hosted workflow execution were not run. The node index contains amd64 and arm64 manifests; this is build/distribution evidence, not application runtime qualification. No multi-platform application rebuild or release publication was required for these chart/tooling changes. |
+
+Chart results are in `artifacts/helm-phase1-chart-check.log` and
+`artifacts/charts/`. The failed sandbox deployment is recorded under
+`artifacts/helm-smoke/`, including the API log and `result.json`. Browser/REST
+outputs are under `artifacts/helm-phase1-browser/`, with logs at
+`artifacts/helm-phase1-browser.log` and `artifacts/helm-phase1-container.log`.
+The one-off interruption result is under `artifacts/helm-phase1-interruption/`.
+Images and evidence were retained; owned test containers, networks and kubeconfigs
+were removed. These results do not meet the phase's production-runtime completion
+condition; rerun `make helm-smoke` on suitable native amd64 and arm64 hosts.
+
+### Sandbox selection verification
+
+Verified on **2026-10-25 (Asia/Tokyo)** in the working tree based on
+`553826de6f90e9c871be7b75060cbea946e5fa0a`. This change exposes the existing
+application `no_sandbox` setting as the boolean Helm value `browser.noSandbox`,
+with default `false`. The application/browser sources and runtime image are
+unchanged; the Docker probe reused `webcappi:helm-phase1` from the earlier build.
+
+- `make chart-check` passed with Helm **4.3.0**, Kubernetes schemas **1.36.4**,
+  PyYAML **6.0.2** and Go **1.26.10**: 21 valid configurations, 38 rejected
+  configurations and 63 Kubernetes resources, with no schema skips. Both sandbox
+  modes passed the application's strict JSON loader. Explicit `false` matched
+  the default Deployment, while `true` changed its config checksum without
+  changing the Pod's security settings. String and numeric opt-outs were rejected.
+- All 42 Python tests and `make format-check lint` passed with Ruff **0.16.8**
+  and Staticcheck **v0.8.1**.
+- A one-off native linux/amd64 Docker probe used the chart-rendered
+  `no_sandbox=true` config with bearer authentication. It passed readiness,
+  unauthorized-request rejection and an authenticated HTML-to-PNG capture using
+  UID/GID 10001, a read-only root, all capabilities dropped, no-new-privileges,
+  and default Docker seccomp/AppArmor. Its container and temporary files were
+  removed. This was a configuration/integration probe, not a Helm installation.
+
+Static results are in `artifacts/helm-sandbox-toggle-check.log`; the capture and
+Docker result are under `artifacts/helm-sandbox-toggle/`. Browser suites and
+multi-platform image builds were not repeated for this chart-only mapping.
+Sandbox-enabled Kubernetes/Actions acceptance, native arm64 runtime and custom
+profile provisioning remain unverified here. Disabled-mode success does not
+qualify sandbox-enabled operation.
+
+### Disabled-mode Helm lifecycle verification
+
+Verified on **2026-10-25 (Asia/Tokyo)** in the working tree based on
+`553826de6f90e9c871be7b75060cbea946e5fa0a`, using the versions recorded above.
+The unchanged application/browser sources reused the previously built
+`webcappi:helm-phase1` image. No host Docker, AppArmor or sysctl settings were
+changed.
+
+- `make helm-smoke IMAGE=webcappi:helm-phase1 HELM_SMOKE_SANDBOX=disabled`
+  passed on native **linux/amd64** with Kubernetes **1.36.4**. It exercised
+  memory installation, two releases, authentication and probes, config changes
+  and restart, authenticated external Redis, scaling, cross-Pod metadata reuse,
+  Redis outage/recovery, automatic and prepared profiles, immutable bundles,
+  image/bundle and generation updates, Service port changes, rollback,
+  uninstall and preservation of external resources. The installed config was
+  checked against the requested sandbox mode after install and rollback.
+- All **49 Python tests**, `make format-check lint` and Actionlint passed.
+  The additional tests cover the enabled default, explicit opt-out, separate
+  artifact paths, success/failure mode records, profile preparation and cleanup
+  without fallback.
+- Owned containers, test image aliases and temporary kubeconfigs were removed.
+  The shared default `kind` Docker network was retained with no attached
+  containers.
+- The workflow now selects disabled-mode tests on both native architectures.
+  GitHub-hosted execution and native **arm64** runtime were not run here.
+  Sandbox-enabled kind/Actions runtime and custom profile provisioning remain
+  unverified. This result does not establish release readiness on both native
+  architectures or qualify sandbox-enabled operation.
+
+The full log is `artifacts/helm-lifecycle-amd64-r1.log`. Screenshots,
+diagnostics and the successful `result.json` with `sandbox=false`,
+`sandbox_mode=disabled` and `platform=linux/amd64` are under
+`artifacts/helm-lifecycle-amd64-r1/helm-disabled/`. Earlier enabled-mode failure
+evidence remains separate at the locations recorded above.

@@ -11,3 +11,4 @@ coverage.out
 coverage.html
 config.json
 capture.png
+charts/**/*.tgz

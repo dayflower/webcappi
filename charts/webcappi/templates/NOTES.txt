@@ -1,0 +1,8 @@
+Access the authenticated API through its ClusterIP Service:
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "webcappi.fullname" . }} 8080:{{ .Values.service.port }}
+
+External credentials and Redis CA files are read at startup. After changing
+them, explicitly restart deployment/{{ include "webcappi.fullname" . }}.
+Keep Redis generation identical across metadata-sharing Pods, and change it
+whenever the application image, fonts, extensions or profile bundle changes.
+Direct scaling outside Helm can bypass the memory/replicaCount constraint.

@@ -1,0 +1,158 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "webcappi.fullname" . }}
+  labels:
+    {{- include "webcappi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- if eq .Values.cache.backend "memory" }}
+    type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "webcappi.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "webcappi.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/config: {{ include "webcappi.config" . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.profiles.bundle.repository }}
+      initContainers:
+        - name: bundle
+          image: {{ include "webcappi.image" .Values.profiles.bundle | quote }}
+          imagePullPolicy: {{ .Values.profiles.bundle.pullPolicy }}
+          command: ["sh", "-ec"]
+          args: ["cp -R /bundle/. /out/"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: bundles, mountPath: /out}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "webcappi.image" .Values.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["webcappi", "serve", "-config", "/etc/webcappi/config.json"]
+          ports:
+            - {name: http, containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: config, mountPath: /etc/webcappi, readOnly: true}
+            - {name: work, mountPath: /work}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+            {{- if .Values.auth.enabled }}
+            - {name: api-token, mountPath: /run/secrets/webcappi, readOnly: true}
+            {{- end }}
+            {{- if eq .Values.cache.backend "redis" }}
+            {{- if .Values.cache.redis.passwordSecret.name }}
+            - {name: redis-password, mountPath: /run/secrets/redis, readOnly: true}
+            {{- end }}
+            {{- if .Values.cache.redis.ca.name }}
+            - {name: redis-ca, mountPath: /run/redis-ca, readOnly: true}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.profiles.bundle.repository }}
+            - {name: bundles, mountPath: /bundles, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "webcappi.fullname" . }}-config}
+        - name: work
+          emptyDir: {sizeLimit: {{ .Values.volumes.workSizeLimit }}}
+        - name: tmp
+          emptyDir: {sizeLimit: {{ .Values.volumes.tmpSizeLimit }}}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: {{ .Values.volumes.shmSizeLimit }}}
+        {{- if .Values.auth.enabled }}
+        - name: api-token
+          secret:
+            secretName: {{ .Values.auth.existingSecret }}
+            defaultMode: 0440
+            items:
+              - {key: {{ .Values.auth.tokenKey | quote }}, path: token}
+        {{- end }}
+        {{- if eq .Values.cache.backend "redis" }}
+        {{- with .Values.cache.redis.passwordSecret }}
+        {{- if .name }}
+        - name: redis-password
+          secret:
+            secretName: {{ .name }}
+            defaultMode: 0440
+            items:
+              - {key: {{ .key | quote }}, path: password}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.cache.redis.ca }}
+        {{- if .name }}
+        - name: redis-ca
+          {{- if eq .kind "Secret" }}
+          secret:
+            secretName: {{ .name }}
+          {{- else }}
+          configMap:
+            name: {{ .name }}
+          {{- end }}
+            defaultMode: 0440
+            items:
+              - {key: {{ .key | quote }}, path: ca.crt}
+        {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.profiles.bundle.repository }}
+        - name: bundles
+          emptyDir: {sizeLimit: {{ .Values.profiles.bundle.sizeLimit }}}
+        {{- end }}

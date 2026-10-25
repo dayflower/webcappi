@@ -16,3 +16,6 @@ __pycache__/
 # Generated browser artifacts and prepared profile bundles.
 /artifacts/
 /bundles/
+
+# Generated Helm packages (smoke diagnostics are under artifacts/).
+/charts/**/*.tgz

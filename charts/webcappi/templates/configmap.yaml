@@ -1,0 +1,10 @@
+{{- include "webcappi.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "webcappi.fullname" . }}-config
+  labels:
+    {{- include "webcappi.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {{- include "webcappi.config" . | nindent 4 }}

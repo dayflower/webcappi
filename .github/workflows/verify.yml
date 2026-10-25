@@ -37,13 +37,17 @@ jobs:
           GOBIN="$RUNNER_TEMP/ci-tools/bin" go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
           GOBIN="$RUNNER_TEMP/ci-tools/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           python3 -m venv "$RUNNER_TEMP/ci-python"
-          "$RUNNER_TEMP/ci-python/bin/pip" install ruff==0.16.8
+          "$RUNNER_TEMP/ci-python/bin/pip" install ruff==0.16.8 PyYAML==6.0.2
           echo "$RUNNER_TEMP/ci-tools/bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/ci-python/bin" >> "$GITHUB_PATH"
       - run: make format-check lint
       - run: go vet ./...
       - run: actionlint
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Install pinned chart tools
+        run: make chart-tools
+      - name: Validate and package Helm chart
+        run: make chart-check
 
   test:
     name: Go and Redis (${{ matrix.arch }})
@@ -71,7 +75,7 @@ jobs:
     name: Browser and API (${{ matrix.arch }})
     needs: [checks, test]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -132,6 +136,15 @@ jobs:
         run: python3 scripts/container-smoke.py 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/container-smoke.log"
       - name: Run Redis replica smoke tests
         run: python3 scripts/redis-smoke.py 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/redis-smoke.log"
+      - name: Install pinned chart tools
+        run: |
+          make chart-tools
+          python3 -m venv "$RUNNER_TEMP/chart-python"
+          "$RUNNER_TEMP/chart-python/bin/pip" install PyYAML==6.0.2
+          echo "$RUNNER_TEMP/chart-python/bin" >> "$GITHUB_PATH"
+      # Enabled-mode profile provisioning is qualified separately; never fall back.
+      - name: Run Helm lifecycle tests (sandbox explicitly disabled)
+        run: make helm-smoke IMAGE="$WEBCAPPI_IMAGE" HELM_SMOKE_SANDBOX=disabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-disabled.log"
       - name: Upload screenshots and diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -140,5 +153,8 @@ jobs:
           path: |
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.png
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.log
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.json
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.yaml
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-disabled/
           if-no-files-found: warn
           retention-days: 7
