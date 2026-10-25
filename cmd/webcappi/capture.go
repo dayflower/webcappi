@@ -17,6 +17,24 @@ import (
 	"github.com/dayflower/webcappi/internal/service"
 )
 
+func runCapture(args []string) (err error) {
+	fs, path, flags, err := parseCommandFlags("capture", args)
+	if err != nil {
+		return err
+	}
+	ctx, stop := commandContext()
+	defer stop()
+	r, err := prepareRuntime(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer r.close(&err)
+	// Jobs use the process context, not the completed startup deadline.
+	s := service.New(ctx, r.config, r.renderer.CaptureWithMetadata)
+	defer s.Close()
+	return captureToFile(ctx, r.config, s, flags.input(fs), *flags.out)
+}
+
 type captureFlags struct {
 	values                    captureinput.Input
 	outputWidth, outputHeight *int

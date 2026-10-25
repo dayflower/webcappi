@@ -188,3 +188,46 @@ func TestMetadataKey(t *testing.T) {
 		}
 	}
 }
+
+func TestShutdownWaitsForCleanupAndCancelsQueue(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.QueueSize = 1
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	// Release the renderer before closing the service if an assertion fails.
+	defer close(release)
+	s := New(t.Context(), cfg, func(ctx context.Context, _ capture.Request) (capture.Result, error) {
+		close(entered)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return capture.Result{}, ctx.Err()
+	})
+	t.Cleanup(s.Close)
+	active, queued := make(chan error, 1), make(chan error, 1)
+	go func() { _, err := s.Get(t.Context(), request("active")); active <- err }()
+	<-entered
+	go func() { _, err := s.Get(t.Context(), request("queued")); queued <- err }()
+	waitActive(t, s, 2)
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	<-canceled
+	if err := <-queued; !errors.Is(err, context.Canceled) {
+		t.Fatal("queued job was not canceled", err)
+	}
+	select {
+	case <-closed:
+		t.Fatal("service closed before renderer cleanup")
+	default:
+	}
+	if _, err := s.Get(t.Context(), request("late")); !errors.Is(err, ErrClosed) {
+		t.Fatal("shutdown admitted another job", err)
+	}
+	// Release cleanup now while retaining the deferred close for failure paths.
+	release <- struct{}{}
+	<-closed
+	if err := <-active; !errors.Is(err, context.Canceled) {
+		t.Fatal("active job did not report cancellation", err)
+	}
+}
