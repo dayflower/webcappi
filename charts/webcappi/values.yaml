@@ -1,0 +1,86 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/dayflower/webcappi
+  tag: "0.1.1"
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Chromium's sandbox is enabled by default. Set true only as an explicit opt-out.
+browser:
+  noSandbox: false
+
+# Create the Secret separately. Credentials are read only at application startup.
+auth:
+  enabled: true
+  existingSecret: ""
+  tokenKey: token
+
+cache:
+  backend: memory
+  redis:
+    address: ""
+    namespace: ""
+    generation: ""
+    username: ""
+    passwordSecret:
+      name: ""
+      key: ""
+    tls: false
+    ca:
+      kind: ConfigMap
+      name: ""
+      key: ""
+    timeoutMS: 500
+    retentionSeconds: 86400
+
+# Explicit zero capacities and maxAgeSeconds=0 retain their application meaning.
+capture:
+  concurrency: 1
+  queueSize: 8
+  maxRequests: 64
+  timeoutSeconds: 30
+  metadataMaxBytes: 1048576
+  metadataMaxEntries: 128
+  maxAgeSeconds: 60
+  maxWidth: 4096
+  maxHeight: 4096
+  maxPixels: 8388608
+  resizeAlgorithm: bilinear
+  maxProfileBytes: 536870912
+  maxPOSTBytes: 1048576
+  maxPNGBytes: 41943040
+
+profiles:
+  # Application profile descriptors, including their snake_case field names.
+  descriptors: {}
+  bundle:
+    # A tag must be immutable; a digest is preferred and takes precedence.
+    repository: ""
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+    sizeLimit: 1Gi
+
+service:
+  port: 8080
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+    ephemeral-storage: 1Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+    ephemeral-storage: 4Gi
+volumes:
+  workSizeLimit: 2Gi
+  tmpSizeLimit: 256Mi
+  shmSizeLimit: 512Mi
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

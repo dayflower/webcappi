@@ -1,6 +1,8 @@
 GO ?= go
 STATICCHECK ?= staticcheck
 RUFF ?= ruff
+HELM ?= $(CURDIR)/bin/chart-tools/helm
+HELM_SMOKE_SANDBOX ?= enabled
 IMAGE ?= webcappi:dev
 PLATFORM ?=
 PLATFORMS ?= linux/amd64,linux/arm64
@@ -14,6 +16,7 @@ BUILD_ARGS = --build-arg WEBCAPPI_VERSION="$(WEBCAPPI_VERSION)" --build-arg WEBC
 .PHONY: build test image image-multi binaries browser-test redis-test
 .PHONY: format-check format-check-go format-check-python format format-go format-python
 .PHONY: lint lint-go lint-python
+.PHONY: chart-tools chart-check chart-package helm-smoke
 build:
 	$(GO) build -trimpath -buildvcs=false -ldflags "$(BUILD_LDFLAGS)" -o bin/webcappi ./cmd/webcappi
 
@@ -66,3 +69,15 @@ browser-test:
 
 redis-test:
 	GO="$(GO)" bash scripts/redis-test.sh
+
+chart-tools:
+	python3 scripts/chart-tools.py
+
+chart-check:
+	GO="$(GO)" python3 scripts/chart-check.py --helm "$(HELM)"
+
+# Packaging runs the same checks before exporting artifacts/charts/*.tgz.
+chart-package: chart-check
+
+helm-smoke:
+	python3 scripts/helm-smoke.py --helm "$(HELM)" --image "$(IMAGE)" --sandbox "$(HELM_SMOKE_SANDBOX)"

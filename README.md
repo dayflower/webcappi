@@ -830,6 +830,14 @@ sample work. An administrator can evaluate the explicit `no_sandbox` option for
 a controlled workload; doing so removes Chromium's sandbox isolation. See
 [Chromium's AppArmor/user-namespace guidance](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
 
+For Helm-managed installations, use the local [webcappi chart](charts/webcappi/README.md).
+It supports authenticated memory or external Redis deployments, prepared profile
+bundles and a ClusterIP Service. Its README covers values, Secret preparation,
+updates and rollback. The browser sandbox is enabled by default; operators can
+explicitly disable it with `browser.noSandbox=true`. Sandbox-enabled operation
+requires compatible nodes; see the recorded
+[Helm verification limits](notes/DEVELOP.md#helm-chart-verification).
+
 `deploy/kubernetes.yaml` supplies a single-replica Deployment, ClusterIP Service,
 ConfigMap, probes, resource limits, graceful termination, non-root execution,
 read-only root mounts, writable emptyDir scratch and memory-backed shared
