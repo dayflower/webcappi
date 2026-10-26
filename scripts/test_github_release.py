@@ -339,6 +339,7 @@ class GithubReleaseTest(unittest.TestCase):
         self.assertIn("chart-distribution.json", fake.uploads)
         self.assertIn("helm install capture", fake.current["body"])
         self.assertIn("--version 0.1.2", fake.current["body"])
+        self.assertIn("-f operator-values.yaml", fake.current["body"])
 
     def test_chart_aware_tag_cannot_publish_without_native_distribution_record(self):
         with (

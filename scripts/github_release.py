@@ -259,10 +259,10 @@ def release_notes(body, tag, revision, image, digest, chart=False):
         section += (
             f"\n\n<!-- webcappi-chart -->\nHelm chart: `{REGISTRY}/webcappi`\n\n"
             f"Chart version: `{release_version(tag)}`. See `chart-distribution.json` for the verified OCI and image digests and native acceptance.\n\n"
-            "Prepare the bearer-token Secret and compatible sandbox node policies as described in the "
+            "Prepare the bearer-token Secret, compatible sandbox node policies and operator-values.yaml as described in the "
             f"[chart guide](https://github.com/dayflower/webcappi/blob/{tag}/charts/webcappi/README.md), then install:\n\n"
             f"```sh\nhelm install capture {REGISTRY}/webcappi --version {release_version(tag)} "
-            "--namespace captures --create-namespace --set auth.existingSecret=capture-auth\n```\n<!-- /webcappi-chart -->"
+            "--namespace captures --create-namespace --set auth.existingSecret=capture-auth -f operator-values.yaml\n```\n<!-- /webcappi-chart -->"
         )
     body = body or ""
     if MARKER in body:
