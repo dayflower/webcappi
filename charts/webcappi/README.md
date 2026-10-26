@@ -1,11 +1,68 @@
 # webcappi Helm chart
 
-Deploy the Chromium capture API using a local application chart, with its
+Deploy the Chromium capture API using an application chart, with its
 browser sandbox enabled by default.
 The chart provides a ClusterIP Service and optional Ingress or Gateway API
-HTTPRoute resources. OCI chart publication remains a later phase; install the
-local chart for now.
+HTTPRoute resources. The release workflow publishes versioned OCI charts after
+distribution acceptance. The first publication is planned for application
+version **0.1.2**; until that release completes, use the local chart.
 The existing [raw manifests](../../deploy/kubernetes.yaml) remain supported.
+
+## Public OCI installation and upgrades
+
+Once the selected version's GitHub Release includes `chart-distribution.json`,
+the chart is available without registry login at
+`oci://ghcr.io/dayflower/charts/webcappi`. Chart `version` and `appVersion`
+both equal the application version without `v`. There is no independent chart
+version series or floating chart alias. The distribution values pin the verified
+multi-platform application image digest; the local source values are not the
+distribution defaults. Confirm the version exists before using this example:
+
+```sh
+helm pull oci://ghcr.io/dayflower/charts/webcappi --version 0.1.2
+helm show values ./webcappi-0.1.2.tgz
+```
+
+Prepare compatible nodes using the [sandbox guide](../../deploy/sandbox/README.md),
+create the namespace and `capture-auth` Secret as below, and keep operator
+settings in a values file. For the qualified node policies, for example:
+
+```yaml
+auth:
+  existingSecret: capture-auth
+browser:
+  seccompProfile:
+    type: Localhost
+    localhostProfile: webcappi/chrome.json
+  appArmorProfile:
+    type: Localhost
+    localhostProfile: webcappi-chrome
+```
+
+These are references to profiles already installed by the operator; adjust them
+to the qualified profile names on your nodes. They do not install node policy.
+
+```sh
+helm install capture ./webcappi-0.1.2.tgz --namespace captures -f operator-values.yaml
+helm upgrade capture oci://ghcr.io/dayflower/charts/webcappi --version 0.1.2 \
+  --namespace captures --reset-values -f operator-values.yaml
+helm history capture --namespace captures
+helm rollback capture 1 --namespace captures --wait
+helm uninstall capture --namespace captures --wait
+```
+
+Choose an explicitly released version for each upgrade, review its values and
+retain the operator values used by each revision. `--reset-values` keeps a prior
+release's image digest from silently overriding the new distribution default.
+Review any intentional image overrides too. Update Redis `generation` whenever
+the image, fonts, extensions or prepared bundle changes, including changes made
+through chart upgrades. Rollback restores the earlier values and generation;
+confirm that the corresponding external Secret, node profiles and bundle remain
+available. Uninstall preserves operator-managed Secrets, Redis, Gateways and
+node profiles. Secret changes still require an explicit Pod restart.
+
+See [distribution and recovery](../../notes/DEVELOP.md#helm-distribution-and-recovery)
+for archive/public acceptance, initial package visibility and interrupted releases.
 
 ## Requirements and local installation
 

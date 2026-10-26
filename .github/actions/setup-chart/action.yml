@@ -1,0 +1,11 @@
+name: Set up pinned chart tools
+description: Install the checksummed Helm, Kubernetes, policy and network tools.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 -m venv "$RUNNER_TEMP/chart-python"
+        "$RUNNER_TEMP/chart-python/bin/pip" install PyYAML==6.0.2
+        echo "$RUNNER_TEMP/chart-python/bin" >> "$GITHUB_PATH"
+        make chart-tools

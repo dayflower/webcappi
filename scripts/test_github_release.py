@@ -318,6 +318,89 @@ class GithubReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting container identity"):
             github.release_notes(rendered, "v0.1.1", REVISION, IMAGE, "sha256:other")
 
+    def test_chart_assets_and_installation_notes_are_added_before_draft_publication(
+        self,
+    ):
+        record = self.root / "chart-distribution.json"
+        record.write_text('{"accepted":true}\n')
+        with patch.object(github.subprocess, "run", side_effect=self.recover):
+            assets = github.prepare_assets(
+                "v0.1.2",
+                REVISION,
+                IMAGE,
+                self.inspected,
+                self.root / "chart-assets",
+                chart_record=record,
+            )
+        self.assertIn("chart-distribution.json", [p.name for p in assets])
+        self.assertIn("chart-distribution.json", assets[-1].read_text())
+        fake = FakeReleases(tag="v0.1.2")
+        self.publish(fake, assets)
+        self.assertIn("chart-distribution.json", fake.uploads)
+        self.assertIn("helm install capture", fake.current["body"])
+        self.assertIn("--version 0.1.2", fake.current["body"])
+
+    def test_chart_aware_tag_cannot_publish_without_native_distribution_record(self):
+        with (
+            patch("sys.argv", ["github_release.py", "--tag", "v0.1.2"]),
+            patch.object(github, "resolve_tag", return_value=REVISION),
+            patch.object(github, "inspect_release", return_value=self.inspected),
+            patch.object(github, "find_release", return_value=None),
+            patch.object(github, "chart_required", return_value=True),
+            patch.object(github, "prepare_assets") as prepare,
+        ):
+            with self.assertRaisesRegex(ValueError, "chart-distribution.json"):
+                github.main()
+            prepare.assert_not_called()
+
+    def test_distribution_retry_reuses_previously_accepted_bytes_and_rejects_conflicts(
+        self,
+    ):
+        candidate = self.root / "candidate.json"
+        candidate.write_text("new acceptance run")
+        current = {"assets": [{"id": 123, "name": "chart-distribution.json"}]}
+        identity = {
+            "manifest_digest": "sha256:a",
+            "archive_sha256": "b",
+            "content_sha256": "c",
+        }
+
+        def download(command, stdout, **kwargs):
+            stdout.write(b"previous acceptance run")
+
+        with (
+            patch.object(github, "chart_record", return_value=identity),
+            patch.object(github.subprocess, "run", side_effect=download),
+        ):
+            recovered = github.reuse_chart_record(
+                "example/test",
+                current,
+                candidate,
+                "v0.1.2",
+                REVISION,
+                self.inspected["digest"],
+                self.root / "reuse",
+            )
+        self.assertEqual(recovered.read_bytes(), b"previous acceptance run")
+        with (
+            patch.object(
+                github,
+                "chart_record",
+                side_effect=[identity, dict(identity, manifest_digest="different")],
+            ),
+            patch.object(github.subprocess, "run", side_effect=download),
+        ):
+            with self.assertRaisesRegex(ValueError, "conflicts"):
+                github.reuse_chart_record(
+                    "example/test",
+                    current,
+                    candidate,
+                    "v0.1.2",
+                    REVISION,
+                    self.inspected["digest"],
+                    self.root / "reuse",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

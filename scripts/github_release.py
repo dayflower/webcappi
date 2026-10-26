@@ -16,6 +16,7 @@ import urllib.parse
 
 from build_info import ROOT, git, release_version
 from release import inspect_release, update_latest
+from release_charts import REGISTRY, validate_proof
 
 MACHINES = {"amd64": 62, "arm64": 183}
 IMAGE_BINARY = "usr/local/bin/webcappi"
@@ -144,14 +145,15 @@ def extract_binary(layout, manifest_digest, arch, destination):
     raise ValueError("No application binary in the published image")
 
 
-def asset_names(tag):
+def asset_names(tag, chart=False):
     return [f"webcappi_{tag}_linux_{arch}.tar.gz" for arch in MACHINES] + [
         "release-manifest.json",
+        *(["chart-distribution.json"] if chart else []),
         "SHA256SUMS",
     ]
 
 
-def prepare_assets(tag, revision, image, inspected, output):
+def prepare_assets(tag, revision, image, inspected, output, chart_record=None):
     output.mkdir(parents=True, exist_ok=True)
     metadata = {
         "version": tag,
@@ -200,7 +202,11 @@ def prepare_assets(tag, revision, image, inspected, output):
     (output / "release-manifest.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n"
     )
-    assets = [output / name for name in asset_names(tag)]
+    if chart_record is not None:
+        destination = output / "chart-distribution.json"
+        if chart_record.resolve() != destination.resolve():
+            shutil.copyfile(chart_record, destination)
+    assets = [output / name for name in asset_names(tag, chart_record is not None)]
     assets[-1].write_text(
         "".join(f"{checksum(path)}  {path.name}\n" for path in assets[:-1])
     )
@@ -247,8 +253,17 @@ def check_assets(repo, current, assets):
     return missing
 
 
-def release_notes(body, tag, revision, image, digest):
+def release_notes(body, tag, revision, image, digest, chart=False):
     section = f"{MARKER}\nContainer image: `{image}:{release_version(tag)}`\n\nPinned image: `{image}@{digest}`\n\nSource commit: `{revision}`\n<!-- /webcappi-container -->"
+    if chart:
+        section += (
+            f"\n\n<!-- webcappi-chart -->\nHelm chart: `{REGISTRY}/webcappi`\n\n"
+            f"Chart version: `{release_version(tag)}`. See `chart-distribution.json` for the verified OCI and image digests and native acceptance.\n\n"
+            "Prepare the bearer-token Secret and compatible sandbox node policies as described in the "
+            f"[chart guide](https://github.com/dayflower/webcappi/blob/{tag}/charts/webcappi/README.md), then install:\n\n"
+            f"```sh\nhelm install capture {REGISTRY}/webcappi --version {release_version(tag)} "
+            "--namespace captures --create-namespace --set auth.existingSecret=capture-auth\n```\n<!-- /webcappi-chart -->"
+        )
     body = body or ""
     if MARKER in body:
         if section not in body:
@@ -258,6 +273,7 @@ def release_notes(body, tag, revision, image, digest):
 
 
 def publish_github(repo, tag, revision, image, inspected, assets):
+    chart = any(path.name == "chart-distribution.json" for path in assets)
     current = find_release(repo, tag)
     prerelease = "-" in release_version(tag)
     if current is not None:
@@ -265,7 +281,9 @@ def publish_github(repo, tag, revision, image, inspected, assets):
             raise ValueError("Existing GitHub Release identity differs")
         missing = check_assets(repo, current, assets)
         # Check identity before uploading or changing any existing release.
-        release_notes(current.get("body"), tag, revision, image, inspected["digest"])
+        release_notes(
+            current.get("body"), tag, revision, image, inspected["digest"], chart
+        )
     else:
         current = api(
             repo,
@@ -301,7 +319,7 @@ def publish_github(repo, tag, revision, image, inspected, assets):
         f"releases/{current['id']}",
         {
             "body": release_notes(
-                current.get("body"), tag, revision, image, inspected["digest"]
+                current.get("body"), tag, revision, image, inspected["digest"], chart
             ),
             "draft": False,
             "prerelease": prerelease,
@@ -314,6 +332,68 @@ def publish_github(repo, tag, revision, image, inspected, assets):
             stream.write(f"GitHub Release: {published['html_url']}\n")
 
 
+def chart_required(revision):
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{revision}:scripts/release-charts.py"],
+            cwd=ROOT,
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def chart_record(path, tag, revision, digest):
+    if path is None:
+        raise ValueError(
+            "Chart-aware releases require chart-distribution.json acceptance"
+        )
+    record = json.loads(path.read_text())
+    if (
+        record["version"] != release_version(tag)
+        or record["revision"] != revision
+        or record["image_digest"] != digest
+        or record["chart"] != REGISTRY + "/webcappi"
+    ):
+        raise ValueError("Chart distribution identity differs from the release")
+    validate_proof(record)
+    return record
+
+
+def reuse_chart_record(repo, current, candidate, tag, revision, digest, output):
+    """Keep previously accepted asset bytes stable for drafts and immutable retries."""
+    expected = chart_record(candidate, tag, revision, digest)
+    found = next(
+        (
+            item
+            for item in (current or {}).get("assets", [])
+            if item["name"] == "chart-distribution.json"
+        ),
+        None,
+    )
+    if found is None:
+        return candidate
+    output.mkdir(parents=True, exist_ok=True)
+    recovered = output / "previous-chart-distribution.json"
+    with recovered.open("wb") as stream:
+        subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/releases/assets/{found['id']}",
+                "--header",
+                "Accept: application/octet-stream",
+            ],
+            stdout=stream,
+            check=True,
+        )
+    previous = chart_record(recovered, tag, revision, digest)
+    for key in ("manifest_digest", "archive_sha256", "content_sha256"):
+        if previous[key] != expected[key]:
+            raise ValueError("Existing chart distribution asset conflicts")
+    return recovered
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
@@ -323,6 +403,7 @@ def main():
         "--repo", default=os.environ.get("GITHUB_REPOSITORY", "dayflower/webcappi")
     )
     parser.add_argument("--image", default="ghcr.io/dayflower/webcappi")
+    parser.add_argument("--chart-record", type=Path)
     parser.add_argument(
         "--output", type=Path, default=ROOT / "artifacts" / "github-release"
     )
@@ -339,15 +420,34 @@ def main():
     if args.digest and inspected["digest"] != args.digest:
         raise ValueError("Published image differs from the verified digest")
     existing = find_release(args.repo, args.tag)
+    needs_chart = chart_required(revision)
+    accepted_chart = None
+    if needs_chart:
+        accepted_chart = reuse_chart_record(
+            args.repo,
+            existing,
+            args.chart_record,
+            args.tag,
+            revision,
+            inspected["digest"],
+            args.output,
+        )
     if existing and existing.get("immutable"):
-        missing = set(asset_names(args.tag)) - {
+        missing = set(asset_names(args.tag, needs_chart)) - {
             item["name"] for item in existing.get("assets", [])
         }
         if missing:
             raise ValueError(
                 "Published release is immutable and missing assets; use a new version"
             )
-    assets = prepare_assets(args.tag, revision, args.image, inspected, args.output)
+    assets = prepare_assets(
+        args.tag,
+        revision,
+        args.image,
+        inspected,
+        args.output,
+        **({"chart_record": accepted_chart} if needs_chart else {}),
+    )
     publish_github(args.repo, args.tag, revision, args.image, inspected, assets)
 
 

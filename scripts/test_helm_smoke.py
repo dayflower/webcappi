@@ -221,6 +221,41 @@ class ClusterLifecycleTest(unittest.TestCase):
 
 
 class SandboxModeTest(unittest.TestCase):
+    def test_shared_fixtures_keep_the_original_redis_certificate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Mock(root=Path(directory), fixtures_ready=False)
+
+            def openssl(*args, **kwargs):
+                (cluster.root / "redis.crt").write_text("original CA")
+                (cluster.root / "redis.key").write_text("private fixture key")
+
+            with patch.object(SMOKE, "run", side_effect=openssl) as run:
+                SMOKE.fixture_resources(cluster)
+                SMOKE.fixture_resources(cluster)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual((cluster.root / "redis.crt").read_text(), "original CA")
+
+    def test_distribution_image_comes_from_the_explicit_archive_defaults(self):
+        image = {
+            "repository": "ghcr.io/example/api",
+            "tag": "1.2.3",
+            "digest": "sha256:" + "a" * 64,
+        }
+        with patch.object(
+            SMOKE, "run", return_value=json.dumps({"image": image})
+        ) as run:
+            args = SMOKE.parse_args(
+                [
+                    "--chart",
+                    "/tmp/distribution.tgz",
+                    "--chart-default-image",
+                    "--image",
+                    "ignored:test",
+                ]
+            )
+        self.assertEqual(args.image, image["repository"] + "@" + image["digest"])
+        self.assertEqual(run.call_args.args[-1], Path("/tmp/distribution.tgz"))
+
     def test_default_preserves_enabled_mode(self):
         with patch.dict(os.environ, {}, clear=True):
             args = SMOKE.parse_args([])

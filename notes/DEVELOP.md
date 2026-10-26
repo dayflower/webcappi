@@ -413,16 +413,17 @@ and identify a clean checkout whose commit belongs to `origin/main`. Leading
 zeros in numeric version identifiers and SemVer build metadata (`+...`) are
 rejected; the latter cannot be represented directly in a Docker tag. Git tags
 are the source of truth; there is no separately maintained VERSION file.
-Use `v0.1.0` for the first release and choose subsequent versions according to
-API/CLI compatibility. Prereleases such as `v0.2.0-rc.1` are supported.
+Choose subsequent versions according to API/CLI compatibility. The first
+chart-enabled release is planned as `v0.1.2`; `v0.1.0` and `v0.1.1` predate
+chart distribution. Prereleases such as `v0.2.0-rc.1` are supported.
 
 After merging the implementation to main, release a reviewed main commit:
 
 ```sh
 git switch main
 git pull --ff-only
-git tag -a v0.1.0 -m 'Release v0.1.0'
-git push origin v0.1.0
+git tag -a v0.1.2 -m 'Release v0.1.2'
+git push origin v0.1.2
 ```
 
 The tag push starts release validation and the full reusable verification suite,
@@ -462,10 +463,12 @@ rerun the affected workflow after the active publication finishes.
 
 The job summary records the exact image and multi-platform digest for deployment
 pinning and rollback. CLI binaries and `build-verification.json` are retained as
-Actions artifacts for seven days. After image publication, the workflow calls
+Actions artifacts for seven days. Chart-enabled tags next qualify the actual
+distribution archive, publish/reuse it, and qualify its anonymous download on
+both native architectures. Only then does the workflow call
 [GitHub Release](../.github/workflows/github-release.yml) with the verified tag,
-commit and image digest. The large OCI archive and synthetic browser profiles
-are not uploaded.
+commit, image digest and chart acceptance artifact. The large OCI archive and
+synthetic browser profiles are not uploaded.
 
 ### GitHub Release automation and recovery
 
@@ -513,6 +516,10 @@ gh workflow run github-release.yml --ref main -f tag=v0.1.1
 
 This manual workflow only creates/completes the GitHub Release from the
 published image; it does not create tags, build images or update GHCR aliases.
+For chart-enabled tags it first reconstructs the candidate chart from the target
+commit and reruns both archive and anonymous-public acceptance with read-only
+package permissions. It never pushes charts. Older tag sources without
+`scripts/release-charts.py` retain the binary-only path and asset names.
 It can handle older tags without rerunning the older tag's workflow definition.
 The GitHub Release job uses the repository's `GITHUB_TOKEN`; no additional
 secret or external release action is required. Temporary registry credentials
@@ -703,6 +710,133 @@ unchanged; the existing Go static checks used Go **1.26.10**.
 Probe assets, the registry log and `recovery-verification.json` are under
 `artifacts/github-release-validation/`. The disposable Registry and its storage
 were removed; no GitHub Release, tag or GHCR package was created or changed.
+
+## Helm distribution and recovery
+
+Chart and application releases share one version. Before preparing a tag, confirm
+that it is unused in Git, the image registry and the chart registry, then update
+both chart metadata fields in a reviewed change:
+
+```sh
+python3 scripts/release-charts.py prepare-version --tag v0.1.2 --dry-run
+python3 scripts/release-charts.py prepare-version --tag v0.1.2
+make chart-check
+```
+
+The helper changes only `Chart.yaml`'s `version` and `appVersion`. It preserves
+browser pins, CRDs and source image defaults; prereleases are supported, while
+leading zeroes and build metadata are rejected by the existing release rules.
+Even chart-only changes require an application patch release. The first planned
+chart version is **0.1.2**, unused when this implementation was prepared.
+
+The Release workflow validates chart metadata before verification. After the
+existing image publisher verifies the multi-platform image, the read-only
+[chart workflow](../.github/workflows/chart-verify.yml) copies the chart from the
+release revision into a temporary directory. It sets the image repository,
+version tag without `v`, and verified multi-platform digest there, runs strict
+lint/render/schema/Go-loader checks and packages that copy. The checkout is never
+rewritten. The candidate `.tgz` is retained for 30 days as an Actions artifact.
+
+Native amd64 and arm64 runners run the enabled lifecycle, explicit disabled
+regression and enabled Ingress/Gateway suite against this exact archive. Each
+suite first installs it with its unmodified image defaults, verifies the actual
+Pod image and performs authenticated captures, probe and authentication checks.
+The remaining policy/lifecycle/network tests use the existing diagnostic image
+derived from that default image. The reports distinguish the original image,
+diagnostic image, native platform, requested/effective sandbox mode, node policy
+and active Chromium evidence. Diagnostic additions do not replace the standard
+image installation check. Every cluster/policy uses the existing qualified setup
+and cleanup; no ambient kubeconfig is used.
+
+Only the chart publishing job receives `packages: write`. All its runs share
+`ghcr-webcappi-chart-publish` concurrency, covering existence checks, comparison
+and push. The helper logs Helm into an isolated temporary registry configuration
+using password stdin, and removes it on success, exception or handled SIGTERM.
+Only a structured registry manifest 404 with `MANIFEST_UNKNOWN`/`NAME_UNKNOWN`
+means absence. Token denial, authorization errors, unknown responses and
+transport failures stop publication. Existing versions are never pushed again:
+all archive file names and bytes must match the candidate. Tar/gzip timestamps
+and ownership do not participate in that comparison; regular-file modes do.
+Additional, missing,
+duplicate, non-regular or unsafe archive entries are rejected.
+
+After publication, both native runners pull with empty Helm and Docker credential
+locations. They compare every file with the verified candidate, verify the chart
+layer SHA-256 against the OCI manifest, check that the manifest has not changed,
+and rerun all three suites using the downloaded archive. There is no local source
+fallback. A failure at either architecture or sandbox mode prevents GitHub Release
+publication. The final `chart-distribution.json` contains chart version and OCI
+manifest digest, the actual downloaded archive SHA-256, content fingerprint,
+source revision, image digest and all four native archive/public acceptance
+records, including sandbox and network evidence. Validation-only runs cannot
+produce this proof. It is attached to the draft and covered by `SHA256SUMS` before
+the GitHub Release is published, together with fixed-version installation notes.
+Binary archive names and contents remain compatible with older releases.
+Successful receipts from earlier attempts of the same Actions run can satisfy a
+failed-job retry only when source/image/content identity still matches. All
+public receipts must agree on the registry digest and downloaded archive hash.
+
+For local sources or a specific archive, use the same static suite without a
+registry mutation (Go/PyYAML and `make chart-tools` are prerequisites):
+
+```sh
+python3 scripts/release-charts.py check --tag v0.1.2 --source charts/webcappi --validation-only
+python3 scripts/release-charts.py check --tag v0.1.2 --source artifacts/charts/webcappi-0.1.2.tgz --validation-only
+```
+
+Omit `--validation-only` to run all three native runtime suites too. The default
+image must already be available to local Docker; for a public distribution image,
+pull its pinned digest first. For PR acceptance, `check --local-image <built-image>`
+sets that image only in a temporary chart copy, exports its `.tgz` under
+`<output>/checked/`, and tests the archive with its default image. The native CI
+uses this path before any release image is published. It cannot be used by the
+publication command. To prepare a candidate from a release revision and
+validate the actual registry download without pushing:
+
+```sh
+python3 scripts/release-charts.py package --source-revision --tag v0.1.2 \
+  --revision "$RELEASE_REVISION" --image-digest "$IMAGE_DIGEST"
+python3 scripts/release-charts.py accept --public --tag v0.1.2 \
+  --revision "$RELEASE_REVISION" --image-digest "$IMAGE_DIGEST" \
+  --archive artifacts/chart-release/webcappi-0.1.2.tgz --output artifacts/chart-public
+```
+
+Set `RELEASE_REVISION` to the full target commit and `IMAGE_DIGEST` to the verified
+multi-platform digest. Packaging inspects image labels/platforms with Skopeo.
+`accept` also supports `--validation-only` for file/identity/static verification;
+that does not qualify runtime or create an acceptance proof. `--public` is
+read-only and is the only public-chart source; omit it for candidate-archive
+acceptance. A specified bad/missing archive is always an error.
+
+Initial GHCR chart visibility is an operator step: after the first chart push,
+open the **charts/webcappi** package settings, link the source repository if
+needed, set visibility to **Public**, and grant this repository the required
+**Manage Actions access**. Check the application image's public visibility too.
+Do not broaden workflow write permissions to work around access failures. The
+first anonymous check can fail until this setup is complete; no completed GitHub
+Release is announced in that state. After fixing visibility, run **GitHub Release
+→ Run workflow → main**, with `tag=v0.1.2`. This reconstructs and qualifies both
+candidate and public chart again on both architectures, with read-only package
+permissions. It does not overwrite, delete or republish the chart. It also works
+after the original Actions artifacts expire.
+
+If publication never occurred, rerun the original tag's Release workflow after
+fixing its failure. If an identical package exists, rerunning that workflow
+reuses it and records the actual registry digest/archive hash. If image or chart
+contents conflict, stop and release a new version. Never move tags or remove
+packages to reuse a version. If native acceptance fails, preserve evidence and
+fix the issue before retrying; changed source requires a new version. Interrupted
+draft uploads reuse matching assets. A previously accepted chart record is
+downloaded, checked against fresh acceptance identity and retained byte-for-byte
+so varying diagnostic process IDs/timestamps do not conflict with immutable
+assets or checksum files. A conflicting or incomplete immutable GitHub Release
+requires a new version. Historical pre-chart tags keep the binary-only recovery
+path; the presence of the distribution helper in the target tag's source,
+rather than a hard-coded version cutoff, selects the chart requirement.
+
+Implementation/PR validation and actual GHCR publication are separate results.
+The first post-merge `v*` release must supply real anonymous acceptance and Release
+asset evidence; mock publication tests cannot establish public availability.
 
 ## Local Helm chart checks
 
@@ -1049,3 +1183,55 @@ from [PR #5 checks](https://github.com/dayflower/webcappi/pull/5/checks),
 including the existing browser suites and both sandbox lifecycle modes.
 Application/browser sources and build recipes were unchanged; no multi-platform
 application rebuild was performed locally for Phase 2.
+
+## Phase 3 distribution validation
+
+On **2026-10-26 (Asia/Tokyo)**, the working tree based on
+`0fd116ea97babe4d81dba074aa45873810c53010` passed local native **linux/amd64**
+acceptance of a packaged `0.1.2` chart with the existing local application image
+`webcappi:helm-cleanroom`, ID
+`sha256:88168024c48aaf60512f7097ea59f41f5162494426467e71c12b565ad0702e99`.
+This is the local-image archive variant, not a published release chart. The
+application/browser sources, pinned policies and build recipes were unchanged.
+
+- Enabled and explicitly disabled lifecycles both passed authentication/probes,
+  standard default-image captures, automatic/prepared profiles, active sandbox
+  selection, immutable templates, plain/TLS Redis, CA/hostname validation,
+  shared metadata, restart/outage recovery, image/bundle/generation changes,
+  Service port changes, rollback, uninstall and cleanup. Enabled mode also
+  passed browser/policy/negative-permission checks and missing-policy failure
+  without an unsandboxed retry.
+- The enabled network suite passed standard default-image captures and both
+  Ingress/HTTPRoute HTTP/TLS/authentication paths, private Service DNS captures,
+  large delayed POSTs, body limits, independent deadlines, route updates,
+  rollback and external-resource preservation. All three `result.json` files
+  record success after scoped cluster/image/policy cleanup.
+- Static validation passed 33 valid configurations, 95 rejected configurations
+  and 107 Kubernetes resources without schema skips. Go **1.26.10** race tests,
+  vet, Staticcheck **v0.8.1**, Ruff **0.16.8**, Actionlint **v1.7.12** and all
+  **81** Python tests passed. Final static/Python checks used PyYAML **6.0.2**;
+  the local runtime harness used system PyYAML **6.0.1**. CI pins **6.0.2**.
+- A disposable loopback OCI Registry **3.0.0** probe performed real Helm push
+  and anonymous pull, compared every file and mode, and matched the downloaded
+  archive SHA-256 with the OCI chart layer. This was not GHCR publication.
+- An initial archive run exposed duplicate fixture preparation replacing the
+  Redis CA while Redis retained its startup certificate. The harness now
+  prepares shared fixtures once per cluster, with a regression test. Its failed
+  evidence remains separate from the successful rerun.
+
+Successful runtime evidence is under `artifacts/helm-phase3-r2/`, with the full
+log at `artifacts/helm-phase3-r2.log`; initial failed evidence is under
+`artifacts/helm-phase3/`. Fixed-dependency static/Python logs are
+`artifacts/helm-phase3-{chart,python,lint,go}.log`. The actual CI packaging helper
+also passed locally under `artifacts/helm-phase3-ci-package/`. OCI probe evidence
+is under `artifacts/helm-phase3-registry/`; its container was removed.
+
+Native amd64/arm64 PR CI now builds the application and tests actual archives
+with the chart defaults before running the existing diagnostic suites. The
+release workflow separately requires the final image-digest-pinned archive and
+the anonymously downloaded GHCR chart on both native platforms. Native arm64
+was not run locally. Real GHCR chart publication, first-package visibility setup,
+anonymous GHCR runtime acceptance and the chart-enabled GitHub Release remain
+unverified until the first post-merge release. No release tag or real GHCR/GitHub
+Release was created or changed by local validation. The public-distribution
+completion condition remains pending that evidence.
