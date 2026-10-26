@@ -707,8 +707,8 @@ were removed; no GitHub Release, tag or GHCR package was created or changed.
 ## Local Helm chart checks
 
 The [chart guide](../charts/webcappi/README.md) documents local installation,
-external Redis and prepared bundles. This phase supplies a ClusterIP Service;
-Ingress, HTTPRoute and chart publication are separate phases.
+external Redis, prepared bundles, optional Ingress and HTTPRoute. OCI chart
+publication remains a later phase.
 
 Use the Dockerfile's Go toolchain, Docker, and Python with PyYAML **6.0.2**.
 Create a virtual environment and install the Python dependency, then install the
@@ -738,15 +738,16 @@ The fixed validation stack is Helm **4.3.0**, kind **0.33.0**, Kubernetes/kubect
 multi-platform index `sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed`.
 Fixture images reuse the digest-pinned Python **3.13-alpine** and Redis
 **8.2.2-alpine** constants in `scripts/smoke_support.py`. The setup script pins
-binary/archive hashes for both supported host architectures. There is no
-controller or Gateway API dependency in this phase.
+binary/archive hashes for both supported host architectures. Network acceptance
+adds the pinned controllers and Gateway API fixture described below.
 
 `chart-check` runs strict Helm lint, valid/invalid rendering cases, strict
 Kubernetes schemas with no missing-schema skips, and the application's actual
 `config.Load` against every rendered JSON configuration. It checks zero-value
 capacities, bounds, JSON escaping, sandbox selection, credentials/TLS, replica
 strategies, digest selection, profile paths/counts/config size, checksums and
-release isolation.
+release isolation, Ingress/HTTPRoute paths, TLS references, API capabilities,
+timeout ordering and Service port forwarding.
 It also exports `artifacts/charts/webcappi-<version>.tgz` and compares all
 packaged files to the source (parsed metadata for Helm-normalized Chart.yaml).
 `chart-package` performs the same validation before packaging.
@@ -955,3 +956,96 @@ Hosts without AppArmor, SELinux, other kernel/CPU/runtime combinations and
 arbitrary configured paths remain unqualified. Anonymous executable memory/memfd
 and source-derived syscall alternatives remain coverage allowances rather than
 a proven minimal set. Policy or browser changes require fresh native validation.
+
+
+## Phase 2 network acceptance
+
+`make helm-network-smoke IMAGE=<local-image>` runs
+`scripts/helm-smoke.py --network-only --sandbox enabled`. It creates its own
+kind cluster using the qualified Phase 1a node setup and cleanup. It never
+uses an ambient kubeconfig or installs controllers into an existing cluster.
+`make helm-smoke` retains both enabled and explicitly disabled lifecycle
+modes. CI runs all three suites on native amd64 and arm64; disabled-mode
+success does not qualify the network suite.
+
+The fixture installs Traefik **3.7.16** for Ingress and Envoy Gateway **1.9.3**
+with Envoy **1.39.5** for HTTPRoute. Image indexes are fixed by digest in
+`scripts/helm_network.py` for both architectures. Kubernetes pulls these pinned
+indexes directly; Docker-to-kind import of digest-only multi-platform indexes
+can fail when Docker exports an index without all architecture blobs. The
+Envoy Gateway install YAML is downloaded by `make chart-tools` and verified by
+SHA-256 before static schema extraction or cluster application. It bundles
+Gateway API **1.6.1** CRDs (including its experimental channel); the chart emits
+only the stable `gateway.networking.k8s.io/v1` HTTPRoute. The application chart
+installs none of the fixture's controller/CRD/Gateway resources.
+
+Traefik's file-provider transport sets a 40-second response-header deadline;
+HTTP/HTTPS entrypoints set 45-second read/write deadlines. The selected
+buffering middleware allows 2 MiB without retries. Envoy Gateway routes set
+45-second request and 40-second backend deadlines. Short-deadline probes
+independently verify each HTTPRoute timeout and count API capture starts to
+reject automatic retries. Traefik's pinned release lacks HTTPRoute timeout
+implementation, so it is used only for Ingress.
+
+The API remains sandbox-enabled with UID/GID 10001, dropped capabilities,
+read-only root and operator-profile references. The suite records active
+Chromium sandbox evidence, serves a private Kubernetes Service DNS target,
+and verifies each routing method independently: unauthenticated/incorrect-token
+rejection, authenticated PNG captures, real TLS/SNI and hostname validation,
+a delayed HTML POST larger than 1 MiB, rejection above the configured 2 MiB
+body limit, Service port 9090, routing updates and Helm rollback. HTTPRoute
+parents attach to an existing Gateway in a separate namespace through
+`allowedRoutes`. Accepted and ResolvedRefs must both be True for every desired
+parent/listener, the expected controller and the current generation; stale
+status is rejected. Request retries/redirects are also covered by a local
+HTTP-server unit test.
+
+Artifacts default to `artifacts/helm-network/`; `WEBCAPPI_ARTIFACTS_DIR` selects
+the parent or `--artifacts` an exact directory. Screenshots, route status,
+controller logs and namespace-wide resource/event snapshots are retained.
+`network.json` records individual passed cases; the outer `result.json` records
+success only after the cluster, scoped policies, test image aliases and temporary
+kubeconfig are removed. Secrets are excluded from diagnostics. Failed runs
+retain their error and partial evidence. The shared kind Docker network remains.
+
+The [chart guide](../charts/webcappi/README.md#ingress-and-gateway-api) provides
+operator-managed TLS, separate-namespace Gateway, transport/body policy,
+capability and update/rollback examples. The tested examples publish root paths;
+URL-prefix rewrites and other controllers require separate qualification.
+
+### Local Phase 2 execution
+
+On **2026-10-26 (Asia/Tokyo)**, implementation commit
+`73818abac5d5e2bd46364e8896c5c81e9afe9580` passed
+`make helm-network-smoke IMAGE=webcappi:helm-cleanroom` on native **linux/amd64**.
+It reused the unchanged application/browser image, source image ID
+`sha256:88168024c48aaf60512f7097ea59f41f5162494426467e71c12b565ad0702e99`;
+the harness built its own disposable diagnostic image. The host used Ubuntu
+**24.04.5 LTS**, kernel **6.8.0-147-generic**, Docker **29.9.1** and the pinned
+kind **0.33.0** / Kubernetes **1.36.4** stack, with containerd **2.3.4** inside
+the node. Chromium's sandbox was enabled with the scoped Phase 1a policies.
+
+- Ingress and HTTPRoute independently passed HTTP/TLS captures, token rejection,
+  private Service DNS targets, 1,100,075-byte delayed HTML POSTs, rejection above
+  2 MiB, route updates, rollback, uninstall and external-resource preservation.
+- HTTPRoute reported fresh Accepted/ResolvedRefs for the requested parent;
+  independently configured backend and request deadlines returned 504 after
+  **6.006 s** and **6.008 s**, respectively. Each probe started exactly one
+  capture and cancellation removed its capture scratch directories.
+- `result.json` reports success after owned cluster/image/policy cleanup;
+  AppArmor removal is recorded. The shared kind network was retained.
+- `make chart-check` passed **33** valid configurations, **95** rejected
+  configurations and **107** resources with no schema skips; strict Go JSON
+  loading and package comparison passed. All **63** Python tests, Go race
+  tests, vet, formatting/static analysis and Actionlint passed.
+
+Evidence is under `artifacts/helm-phase2-r5/helm-network/`, including
+`network.json`, `result.json`, `chromium-sandbox.json`, route status,
+port-forward/controller logs and eight PNG captures. Earlier failed fixture
+iterations remain separate under `artifacts/helm-phase2-r2/` through `-r4/`
+and `artifacts/helm-phase2-local/`. Native arm64 was not
+run locally. Native amd64/arm64 Actions results for the final PR are linked
+from [PR #5 checks](https://github.com/dayflower/webcappi/pull/5/checks),
+including the existing browser suites and both sandbox lifecycle modes.
+Application/browser sources and build recipes were unchanged; no multi-platform
+application rebuild was performed locally for Phase 2.

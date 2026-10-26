@@ -2,8 +2,9 @@
 
 Deploy the Chromium capture API using a local application chart, with its
 browser sandbox enabled by default.
-This phase provides a ClusterIP Service. Ingress, Gateway API and OCI chart
-publication are planned separately; no published chart is required here.
+The chart provides a ClusterIP Service and optional Ingress or Gateway API
+HTTPRoute resources. OCI chart publication remains a later phase; install the
+local chart for now.
 The existing [raw manifests](../../deploy/kubernetes.yaml) remain supported.
 
 ## Requirements and local installation
@@ -60,6 +61,8 @@ port 8080, security contexts and rollout strategies are fixed.
 | `cache.redis` | External primary address, namespace, explicit generation, optional ACL username, password Secret and TLS/CA reference. |
 | `profiles.descriptors`, `profiles.bundle` | Optional application descriptors and immutable bundle image; configured together. |
 | `service.port`, `annotations` | ClusterIP Service; its configurable port targets the fixed named HTTP container port. |
+| `ingress` | Optional networking.k8s.io/v1 Ingress; existing class, annotations, hosts/paths and TLS Secrets. Disabled by default. |
+| `httpRoute` | Optional gateway.networking.k8s.io/v1 HTTPRoute; existing Gateway parents, hostnames, path matches and explicit timeouts. Disabled by default. |
 | `resources` | CPU, memory and ephemeral storage requests/limits for API and initContainer. |
 | `volumes` | Positive `workSizeLimit`, `tmpSizeLimit`, `shmSizeLimit` emptyDir capacities. `/dev/shm` uses memory. |
 | `podAnnotations`, `nodeSelector`, `tolerations`, `affinity` | Pod annotations and scheduling. `checksum/config` is reserved. |
@@ -250,6 +253,195 @@ does not rewrite Preferences, reinstall extensions or launch the browser against
 the template. The application clones the full directory for each capture and
 opens an explicitly created page. Readiness checks verify the mounted content;
 Helm cannot inspect files inside an arbitrary bundle image.
+
+## Ingress and Gateway API
+
+Both resources are disabled by default and can be enabled independently or
+simultaneously. They forward to this release's Service and `service.port`,
+including values other than 8080; the API container still listens on 8080.
+The chart installs no controller, IngressClass, Gateway API CRD, GatewayClass,
+Gateway, certificate or proxy policy. Provision these separately. Ingress uses
+`networking.k8s.io/v1`; HTTPRoute requires `gateway.networking.k8s.io/v1/HTTPRoute`
+in discovery. Install the CRDs before installing/upgrading the application.
+Offline HTTPRoute rendering must explicitly advertise the capability:
+
+```sh
+helm template capture ./charts/webcappi -n captures -f production-values.yaml \
+  --api-versions gateway.networking.k8s.io/v1/HTTPRoute
+```
+
+Helm checks schema, required hosts/paths and parent references during every
+render, including when the other network resource is disabled. It does not
+read TLS Secret contents, Gateway objects or status with `lookup`. Check the
+actual controller status and perform a capture after install and every update.
+`helm --wait` alone does not establish that a public route works.
+
+### Ingress example (Traefik)
+
+Create `capture-tls` in `captures`, containing a certificate valid for your
+public hostname. Supply the existing class and controller-specific annotations:
+
+```yaml
+auth:
+  existingSecret: capture-auth
+capture:
+  timeoutSeconds: 30
+  maxPOSTBytes: 2097152
+service:
+  port: 9090
+  annotations:
+    traefik.ingress.kubernetes.io/service.serverstransport: capture@file
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: capture-body@file
+  hosts:
+    - host: capture.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: capture-tls
+      hosts:
+        - capture.example.com
+```
+
+For the Traefik **3.7.16** configuration exercised by CI, provision this dynamic
+file through the controller's file provider. Names before `@file` refer to
+these operator-managed entries:
+
+```yaml
+http:
+  serversTransports:
+    capture:
+      forwardingTimeouts:
+        responseHeaderTimeout: 40s
+  middlewares:
+    capture-body:
+      buffering:
+        maxRequestBodyBytes: 2097152
+        memRequestBodyBytes: 2097152
+```
+
+Configure the selected entrypoint's
+`transport.respondingTimeouts.readTimeout=45s` and `writeTimeout=45s` in
+Traefik's static configuration. These are controller settings, not portable
+Ingress annotations. The annotations above select the transport/body policy
+and TLS entrypoint; they do not install those policies. Set the same deadlines
+on a plain HTTP entrypoint when using it for tests. Do not attach Retry
+middleware or a buffering `retryExpression`. See the pinned test fixture in
+[scripts/helm_network.py](../../scripts/helm_network.py) and
+[Traefik's Ingress reference](https://doc.traefik.io/traefik/v3.7/reference/routing-configuration/kubernetes/ingress/).
+
+### HTTPRoute example (Envoy Gateway)
+
+Provision the Gateway and its TLS Secret in `gateway-system`. This example
+allows only routes from the `captures` namespace and terminates TLS on the
+listener. No ReferenceGrant is needed for this attachment: the listener's
+`allowedRoutes` controls it. The Service backend remains in the HTTPRoute's
+release namespace. A TLS Secret in another namespace requires separate
+controller-supported certificate references and a ReferenceGrant; prefer a
+Secret in the Gateway namespace as shown.
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public
+  namespace: gateway-system
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: capture.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: capture-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: captures
+```
+
+Supply these application values along with the bearer Secret and qualified
+browser profile references:
+
+```yaml
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - capture.example.com
+  paths:
+    - type: PathPrefix
+      value: /
+  timeouts:
+    request: 45s
+    backendRequest: 40s
+```
+
+Parent `namespace` and `sectionName` are optional; omitting namespace means the
+release namespace, while omitting sectionName permits all matching listeners.
+Paths support `PathPrefix` or `Exact`. Empty hostnames use the parent listener's
+hostname policy. `timeouts` is omitted unless specified. Durations use a single
+integer (up to five digits) followed by `ms`, `s`, `m` or `h`; `0s` disables a
+timeout. A nonzero request deadline must cover the backend deadline; a disabled
+backend timeout cannot fit inside a nonzero request deadline. Verify your
+controller implements both settings. CI uses Envoy Gateway **1.9.3**, its
+Gateway API **1.6.1** CRDs and Envoy **1.39.5**, and proves backend timeout
+behavior by executing a deliberately delayed request. Traefik **3.7.16** is
+used only for Ingress because that release does not implement HTTPRoute
+`timeouts`. See [Envoy Gateway's timeout guide](https://gateway.envoyproxy.io/docs/tasks/traffic/http-timeouts/).
+
+Check `status.parents` for **Accepted=True** and **ResolvedRefs=True** for the
+selected controller, parent/listener and current `metadata.generation`:
+
+```sh
+kubectl -n captures get httproute capture-webcappi -o yaml
+```
+
+### Deadlines, bodies, authentication and paths
+
+Set proxy deadlines above `capture.timeoutSeconds`, with room for upload,
+queueing and response transfer. A larger application deadline requires
+corresponding controller limits. Size request-body policies for
+`capture.maxPOSTBytes` and any surrounding proxy limits. CI verifies a delayed
+HTML POST larger than 1 MiB with a 2 MiB limit and rejection above that limit.
+HTTPRoute has no portable request-body-size field: the chart sets none; the
+application enforces `maxPOSTBytes`, and optional Gateway policies belong to
+the operator. Controllers must not automatically retry expensive captures,
+including on timeout, disconnect or backend errors. Keep API authentication
+enabled and preserve the Authorization header through every proxy.
+
+Publish `/` by default. Matching `/capture` or `/healthz` selects existing API
+paths; matching `/webcappi` does not add URL-prefix support or remove that
+prefix. A prefixed deployment requires an operator-managed rewrite and separate
+end-to-end verification; this chart does not generate rewrites. The qualified
+examples use root paths. TLS is terminated by the controller; the backend
+Service speaks HTTP. Use certificates trusted by clients in production.
+
+Private URLs and Kubernetes Service DNS remain valid **capture targets**:
+pass them as the API's `url` parameter. Public routing applies to the API
+connection and does not change browser target access. `/healthz` and `/readyz`
+remain unauthenticated. Public TLS/authentication is verified by the smoke
+suite, including rejection of wrong SNI certificate names.
+
+Routing-only changes update network objects without changing the application's
+configuration checksum. Use `helm history` and `helm rollback` as below to
+restore previous routes, then verify status and perform a capture again.
+Uninstall removes the release's Ingress/HTTPRoute and leaves operator-managed
+controllers, Gateways and TLS Secrets intact.
 
 ## Updates, rollback and removal
 

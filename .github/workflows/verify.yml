@@ -75,7 +75,7 @@ jobs:
     name: Browser and API (${{ matrix.arch }})
     needs: [checks, test]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 110
     strategy:
       fail-fast: false
       matrix:
@@ -144,6 +144,8 @@ jobs:
           echo "$RUNNER_TEMP/chart-python/bin" >> "$GITHUB_PATH"
       - name: Run Helm lifecycle tests (sandbox enabled)
         run: make helm-smoke IMAGE="$WEBCAPPI_IMAGE" HELM_SMOKE_SANDBOX=enabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-enabled.log"
+      - name: Run Helm Ingress and Gateway acceptance (sandbox enabled)
+        run: make helm-network-smoke IMAGE="$WEBCAPPI_IMAGE" 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-network.log"
       - name: Verify sandbox setup failure and interruption cleanup
         run: python3 scripts/sandbox/sandbox-cleanup-check.py --artifacts "$WEBCAPPI_ARTIFACTS_DIR/helm-cleanup"
       - name: Run Helm lifecycle tests (sandbox explicitly disabled)
@@ -162,5 +164,6 @@ jobs:
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-cleanup/
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-enabled/
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-disabled/
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-network/
           if-no-files-found: warn
           retention-days: 7

@@ -184,6 +184,39 @@ class Cluster:
                     (
                         self.args.artifacts / f"{name}-{container['name']}.log"
                     ).write_text(logs or "")
+            if getattr(self.args, "network_only", False):
+                resources = self.kube(
+                    "get",
+                    "ingress,httproute,gateway,gatewayclass,deploy,pod,svc,events",
+                    "--all-namespaces",
+                    "-o",
+                    "yaml",
+                    check=False,
+                    timeout=30,
+                )
+                (self.args.artifacts / "network-resources.yaml").write_text(
+                    resources or ""
+                )
+                pods = json.loads(
+                    self.kube("get", "pods", "--all-namespaces", "-o", "json")
+                )["items"]
+                for pod in pods:
+                    namespace = pod["metadata"]["namespace"]
+                    if namespace not in ("network-system", "envoy-gateway-system"):
+                        continue
+                    name = pod["metadata"]["name"]
+                    logs = self.kube(
+                        "logs",
+                        name,
+                        "--namespace",
+                        namespace,
+                        "--all-containers",
+                        check=False,
+                        timeout=10,
+                    )
+                    (self.args.artifacts / f"{namespace}-{name}.log").write_text(
+                        logs or ""
+                    )
         except Exception as error:
             (self.args.artifacts / "diagnostic-error.log").write_text(str(error))
 
@@ -277,13 +310,13 @@ class Cluster:
             time.sleep(0.2)
 
     @contextmanager
-    def forward(self, resource, port=8080, token=TOKEN):
+    def forward(self, resource, port=8080, token=TOKEN, namespace=NAMESPACE):
         with tempfile.TemporaryFile(mode="w+") as log:
             process = subprocess.Popen(
                 [
                     str(self.args.kubectl),
                     "--namespace",
-                    NAMESPACE,
+                    namespace,
                     "port-forward",
                     resource,
                     f"0:{port}",
@@ -318,6 +351,19 @@ class Cluster:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+                if getattr(self.args, "network_only", False):
+                    path = self.args.artifacts / (
+                        "forward-"
+                        + namespace
+                        + "-"
+                        + resource.replace("/", "-")
+                        + "-"
+                        + uuid.uuid4().hex[:8]
+                        + ".log"
+                    )
+                    path.write_text(
+                        os.pread(log.fileno(), 65536, 0).decode(errors="replace")
+                    )
 
 
 def fixture_resources(cluster):
@@ -1391,6 +1437,11 @@ def parse_args(argv=None):
     parser.add_argument(
         "--image", default=os.environ.get("WEBCAPPI_IMAGE", "webcappi:dev")
     )
+    parser.add_argument(
+        "--network-only",
+        action="store_true",
+        help="run real Ingress/Gateway acceptance with the sandbox enabled",
+    )
     parser.add_argument("--chart", type=Path, default=ROOT / "charts/webcappi")
     parser.add_argument(
         "--sandbox",
@@ -1405,6 +1456,8 @@ def parse_args(argv=None):
     for tool in ["helm", "kind", "kubectl"]:
         parser.add_argument("--" + tool, default=str(TOOLS / tool))
     args = parser.parse_args(argv)
+    if args.network_only and args.sandbox != "enabled":
+        parser.error("network acceptance requires --sandbox=enabled")
     # Dockerfile FROM and kubectl arguments must receive one image reference.
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_./:@-]+", args.image):
         parser.error("invalid image reference")
@@ -1413,10 +1466,9 @@ def parse_args(argv=None):
     except ValueError as error:
         parser.error(str(error))
     if args.artifacts is None:
-        args.artifacts = (
-            Path(os.environ.get("WEBCAPPI_ARTIFACTS_DIR", ROOT / "artifacts"))
-            / f"helm-{args.sandbox}"
-        )
+        args.artifacts = Path(
+            os.environ.get("WEBCAPPI_ARTIFACTS_DIR", ROOT / "artifacts")
+        ) / ("helm-network" if args.network_only else f"helm-{args.sandbox}")
     args.artifacts = args.artifacts.resolve()
     return args
 
@@ -1431,6 +1483,7 @@ def write_result(args, result, error=None):
         "kubernetes": TOOL_SETTINGS["KUBERNETES_VERSION"],
         "platform": args.runtime_platform,
     }
+    report["network"] = getattr(args, "network_record", None)
     report["policy"] = getattr(args, "policy_record", None)
     report["images"] = getattr(args, "image_record", None)
     report["environment"] = getattr(args, "runtime_record", None)
@@ -1466,7 +1519,21 @@ def main():
             with tempfile.TemporaryDirectory(prefix="webcappi-helm-") as temporary:
                 diagnostic_image(args, Path(temporary), aliases)
                 with Cluster(args, Path(temporary)) as cluster:
-                    suite(cluster, args, Path(temporary), aliases)
+                    if args.network_only:
+                        from helm_network import network_suite
+
+                        network_suite(
+                            cluster,
+                            args,
+                            run,
+                            capture,
+                            sandbox_evidence,
+                            fixture_resources,
+                            image_values,
+                            TOKEN,
+                        )
+                    else:
+                        suite(cluster, args, Path(temporary), aliases)
         write_result(args, "passed")
     except BaseException as error:
         write_result(args, "failed", error)

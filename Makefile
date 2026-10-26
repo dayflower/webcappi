@@ -16,7 +16,7 @@ BUILD_ARGS = --build-arg WEBCAPPI_VERSION="$(WEBCAPPI_VERSION)" --build-arg WEBC
 .PHONY: build test image image-multi binaries browser-test redis-test
 .PHONY: format-check format-check-go format-check-python format format-go format-python
 .PHONY: lint lint-go lint-python
-.PHONY: chart-tools chart-check chart-package helm-smoke
+.PHONY: chart-tools chart-check chart-package helm-smoke helm-network-smoke
 build:
 	$(GO) build -trimpath -buildvcs=false -ldflags "$(BUILD_LDFLAGS)" -o bin/webcappi ./cmd/webcappi
 
@@ -81,3 +81,6 @@ chart-package: chart-check
 
 helm-smoke:
 	python3 scripts/helm-smoke.py --helm "$(HELM)" --image "$(IMAGE)" --sandbox "$(HELM_SMOKE_SANDBOX)"
+
+helm-network-smoke:
+	python3 scripts/helm-smoke.py --helm "$(HELM)" --image "$(IMAGE)" --sandbox enabled --network-only
