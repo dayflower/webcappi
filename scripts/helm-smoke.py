@@ -367,6 +367,8 @@ class Cluster:
 
 
 def fixture_resources(cluster):
+    if getattr(cluster, "fixtures_ready", False) is True:
+        return
     certificate = cluster.root / "redis.crt"
     key = cluster.root / "redis.key"
     run(
@@ -509,6 +511,7 @@ def fixture_resources(cluster):
             },
         )
         cluster.kube("rollout", "status", "deployment/" + name, "--timeout=120s")
+    cluster.fixtures_ready = True
 
 
 def capture(client, path, artifacts, name):
@@ -1444,6 +1447,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--chart", type=Path, default=ROOT / "charts/webcappi")
     parser.add_argument(
+        "--chart-default-image",
+        action="store_true",
+        help="also install and capture with the chart's unmodified default image",
+    )
+    parser.add_argument(
         "--sandbox",
         choices=("enabled", "disabled"),
         default="enabled",
@@ -1456,6 +1464,16 @@ def parse_args(argv=None):
     for tool in ["helm", "kind", "kubectl"]:
         parser.add_argument("--" + tool, default=str(TOOLS / tool))
     args = parser.parse_args(argv)
+    if args.chart_default_image:
+        import yaml
+
+        defaults = yaml.safe_load(run(args.helm, "show", "values", args.chart))
+        image = defaults["image"]
+        args.image = (
+            f"{image['repository']}@{image['digest']}"
+            if image.get("digest")
+            else f"{image['repository']}:{image['tag']}"
+        )
     if args.network_only and args.sandbox != "enabled":
         parser.error("network acceptance requires --sandbox=enabled")
     # Dockerfile FROM and kubectl arguments must receive one image reference.
@@ -1487,9 +1505,47 @@ def write_result(args, result, error=None):
     report["policy"] = getattr(args, "policy_record", None)
     report["images"] = getattr(args, "image_record", None)
     report["environment"] = getattr(args, "runtime_record", None)
+    report["default_image"] = getattr(args, "default_image_record", None)
     if error is not None:
         report["error"] = str(error)
     (args.artifacts / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+
+
+def default_image_capture(cluster, args):
+    """Exercise the exact distribution default before diagnostic-image overrides."""
+    source = args.source_image
+    if "@" not in source:
+        cluster.load(source)
+    fixture_resources(cluster)
+    values = {
+        "auth": {"existingSecret": "api-auth", "tokenKey": "access-token"},
+        "browser": {
+            "noSandbox": args.sandbox == "disabled",
+            **(cluster.policy.values if cluster.policy else {}),
+        },
+    }
+    cluster.upgrade("distribution", values)
+    pod = cluster.pods("distribution")[0]
+    data = json.loads(cluster.kube("get", "pod", pod, "-o", "json"))
+    container = next(c for c in data["spec"]["containers"] if c["name"] == "api")
+    assert container["image"] == source, "chart default image was overridden"
+    path = "/capture?" + urllib.parse.urlencode(
+        {
+            "url": "http://fixture.smoke.svc.cluster.local:8000/",
+            "width": 320,
+            "height": 200,
+            "ready_selector": "#page-ready",
+        }
+    )
+    with cluster.forward("service/distribution-webcappi") as client:
+        capture(client, path, args.artifacts, "distribution-default")
+    status = next(c for c in data["status"]["containerStatuses"] if c["name"] == "api")
+    args.default_image_record = {
+        "passed": True,
+        "image": source,
+        "image_id": status["imageID"],
+    }
+    cluster.helm("uninstall", "distribution", "--wait", "--timeout", "90s")
 
 
 def main():
@@ -1519,6 +1575,8 @@ def main():
             with tempfile.TemporaryDirectory(prefix="webcappi-helm-") as temporary:
                 diagnostic_image(args, Path(temporary), aliases)
                 with Cluster(args, Path(temporary)) as cluster:
+                    if args.chart_default_image:
+                        default_image_capture(cluster, args)
                     if args.network_only:
                         from helm_network import network_suite
 

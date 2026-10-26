@@ -26,6 +26,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_REVISION: ${{ github.sha }}
         run: python3 scripts/release.py validate --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT"
+      - name: Validate chart release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/chart-metadata"
+          "$RUNNER_TEMP/chart-metadata/bin/pip" install PyYAML==6.0.2
+          "$RUNNER_TEMP/chart-metadata/bin/python" scripts/release-charts.py validate --tag "$RELEASE_TAG"
 
   verify:
     needs: validate
@@ -103,9 +110,74 @@ jobs:
         if: ${{ always() }}
         run: rm -f "$REGISTRY_AUTH_FILE"
 
+  chart_archive:
+    name: Qualify chart distribution archive
+    needs: [validate, publish]
+    uses: ./.github/workflows/chart-verify.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      stage: archive
+      tag: ${{ needs.validate.outputs.version }}
+      revision: ${{ needs.validate.outputs.revision }}
+      image_digest: ${{ needs.publish.outputs.digest }}
+
+  publish_chart:
+    name: Publish verified chart to GHCR
+    needs: [validate, publish, chart_archive]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ghcr-webcappi-chart-publish
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.version }}
+      RELEASE_REVISION: ${{ needs.validate.outputs.revision }}
+      IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-chart
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.chart_archive.outputs.candidate_artifact }}
+          path: artifacts/candidate
+      - name: Publish or reuse identical chart contents
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WEBCAPPI_CHART_AUTH_DIR: ${{ runner.temp }}/webcappi-chart-auth
+        run: |
+          version="${RELEASE_TAG#v}"
+          python3 scripts/release-charts.py publish --archive "artifacts/candidate/webcappi-$version.tgz" --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --image-digest "$IMAGE_DIGEST"
+      - name: Remove chart registry credentials
+        if: ${{ always() }}
+        env:
+          WEBCAPPI_CHART_AUTH_DIR: ${{ runner.temp }}/webcappi-chart-auth
+        run: rm -rf "$WEBCAPPI_CHART_AUTH_DIR"
+
+  chart_public:
+    name: Qualify anonymous chart distribution
+    needs: [validate, publish, chart_archive, publish_chart]
+    uses: ./.github/workflows/chart-verify.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      stage: public
+      tag: ${{ needs.validate.outputs.version }}
+      revision: ${{ needs.validate.outputs.revision }}
+      image_digest: ${{ needs.publish.outputs.digest }}
+      candidate_artifact: ${{ needs.chart_archive.outputs.candidate_artifact }}
+
   github_release:
     name: Publish GitHub Release
-    needs: [validate, publish]
+    needs: [validate, publish, chart_public]
     permissions:
       contents: write
       packages: read
@@ -114,3 +186,4 @@ jobs:
       tag: ${{ needs.validate.outputs.version }}
       revision: ${{ needs.validate.outputs.revision }}
       digest: ${{ needs.publish.outputs.digest }}
+      chart_record_artifact: ${{ needs.chart_public.outputs.record_artifact }}

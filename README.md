@@ -101,6 +101,23 @@ libraries, fonts and sandbox configuration described below. All assets are
 attached to a draft before publication, including when immutable releases are
 enabled. Prerelease tags create prereleases on GitHub as well.
 
+Starting with the first chart-enabled release (planned as **0.1.2**), GitHub
+Release publication also requires anonymous native amd64/arm64 chart acceptance
+and includes `chart-distribution.json`. After that release completes, install
+the fixed-version public chart with an existing bearer-token Secret and prepared
+sandbox node policies:
+
+```sh
+helm install capture oci://ghcr.io/dayflower/charts/webcappi --version 0.1.2 \
+  --namespace captures --create-namespace --set auth.existingSecret=capture-auth \
+  -f operator-values.yaml
+```
+
+The distribution chart pins the verified multi-platform image digest. See the
+[chart guide](charts/webcappi/README.md#public-oci-installation-and-upgrades) for
+Secret/node preparation, values, upgrades and rollback. Until the first public
+release passes acceptance, use the local chart instructions.
+
 The application version comes from its Git tag, independently of the pinned
 Chrome version. `webcappi version` prints the application version, full source
 commit, modified state and Chrome version. Server startup logs include the same

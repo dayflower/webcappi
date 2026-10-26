@@ -142,15 +142,26 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/chart-python"
           "$RUNNER_TEMP/chart-python/bin/pip" install PyYAML==6.0.2
           echo "$RUNNER_TEMP/chart-python/bin" >> "$GITHUB_PATH"
+      - name: Package the actual CI image defaults for native archive acceptance
+        id: chart
+        run: |
+          version="$(python3 -c 'import yaml; print(yaml.safe_load(open("charts/webcappi/Chart.yaml"))["version"])')"
+          python3 scripts/release-charts.py check --tag "v$version" --source charts/webcappi --local-image "$WEBCAPPI_IMAGE" --validation-only --output "$WEBCAPPI_ARTIFACTS_DIR/chart-package" --github-output "$GITHUB_OUTPUT"
       - name: Run Helm lifecycle tests (sandbox enabled)
-        run: make helm-smoke IMAGE="$WEBCAPPI_IMAGE" HELM_SMOKE_SANDBOX=enabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-enabled.log"
+        run: python3 scripts/helm-smoke.py --chart "$CHART_ARCHIVE" --chart-default-image --sandbox enabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-enabled.log"
+        env:
+          CHART_ARCHIVE: ${{ steps.chart.outputs.archive }}
       - name: Run Helm Ingress and Gateway acceptance (sandbox enabled)
-        run: make helm-network-smoke IMAGE="$WEBCAPPI_IMAGE" 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-network.log"
+        run: python3 scripts/helm-smoke.py --chart "$CHART_ARCHIVE" --chart-default-image --network-only 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-network.log"
+        env:
+          CHART_ARCHIVE: ${{ steps.chart.outputs.archive }}
       - name: Verify sandbox setup failure and interruption cleanup
         run: python3 scripts/sandbox/sandbox-cleanup-check.py --artifacts "$WEBCAPPI_ARTIFACTS_DIR/helm-cleanup"
       - name: Run Helm lifecycle tests (sandbox explicitly disabled)
         if: ${{ !cancelled() }}
-        run: make helm-smoke IMAGE="$WEBCAPPI_IMAGE" HELM_SMOKE_SANDBOX=disabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-disabled.log"
+        run: python3 scripts/helm-smoke.py --chart "$CHART_ARCHIVE" --chart-default-image --sandbox disabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-disabled.log"
+        env:
+          CHART_ARCHIVE: ${{ steps.chart.outputs.archive }}
       - name: Upload screenshots and diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -165,5 +176,6 @@ jobs:
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-enabled/
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-disabled/
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-network/
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/chart-package/
           if-no-files-found: warn
           retention-days: 7
