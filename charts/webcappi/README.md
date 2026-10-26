@@ -9,9 +9,11 @@ The existing [raw manifests](../../deploy/kubernetes.yaml) remain supported.
 ## Requirements and local installation
 
 - Linux amd64 or arm64 nodes, sufficient ephemeral storage, and a node/runtime
-  policy that permits Chromium's sandbox with RuntimeDefault seccomp when
-  `browser.noSandbox=false` (the default). The chart grants no additional
-  capabilities.
+  policy that permits Chromium's user-namespace sandbox when
+  `browser.noSandbox=false` (the default). Standard runtimes may require
+  existing Localhost seccomp/AppArmor profiles; follow the
+  [node preparation guide](../../deploy/sandbox/README.md). The chart grants
+  no additional capabilities and does not install node policy.
 - Helm 4; validation tooling pins Helm 4.3.0 and Kubernetes 1.36.4. See the
   [development notes](../../notes/DEVELOP.md) for executed validation and limits.
 - An application image containing the pinned full Chrome for Testing. No
@@ -105,20 +107,54 @@ to `false` to enable the sandbox again. A config checksum triggers a Deployment
 update when it changes. There is no automatic fallback to an unsandboxed browser
 when startup fails. Disabling Chromium's sandbox removes its internal process
 isolation; the chart's non-root identity, read-only mounts, dropped capabilities,
-RuntimeDefault seccomp and resource limits remain in effect.
+the selected seccomp/AppArmor profiles and resource limits remain in effect.
 
 Sandbox-enabled operation still requires a compatible node/runtime policy.
-Custom seccomp/AppArmor profile support and its environment setup are separate
-work. Validate and record the selected mode explicitly; a successful run with
-the sandbox disabled does not qualify sandbox-enabled operation.
+The API container accepts two dedicated existing-profile references:
+
+| Value | Default | Accepted values |
+| --- | --- | --- |
+| `browser.seccompProfile.type` | `RuntimeDefault` | `RuntimeDefault`, `Localhost` |
+| `browser.seccompProfile.localhostProfile` | `""` | Clean relative path under the kubelet seccomp directory, required only for `Localhost` |
+| `browser.appArmorProfile.type` | `""` | Empty (runtime default, including hosts without AppArmor), `RuntimeDefault`, `Localhost` |
+| `browser.appArmorProfile.localhostProfile` | `""` | Existing enforced profile name, required only for `Localhost` |
+
+Provision the [node policies](../../deploy/sandbox/README.md) before installing:
+
+```yaml
+browser:
+  noSandbox: false
+  seccompProfile:
+    type: Localhost
+    localhostProfile: webcappi/chrome.json
+  appArmorProfile:
+    type: Localhost
+    localhostProfile: webcappi-chrome
+```
+
+References apply only to `api`; bundle-copy init containers inherit the Pod's
+RuntimeDefault seccomp and runtime AppArmor default. On hosts without AppArmor,
+leave its type empty. Unconfined, incomplete Localhost references, traversal
+paths and legacy security-profile annotations are rejected. All UID/GID,
+no-privilege-escalation, capability and filesystem constraints remain intact.
+Helm does not inspect or load host profiles. Missing policy fails container
+creation; incompatible policy fails browser startup/readiness, with no retry
+using a disabled sandbox. Inspect Pod events and API logs, then correct node
+preparation before retrying.
+
+Validate and record the selected mode explicitly; disabled-mode success does
+not qualify sandbox-enabled operation. The disposable kind helper prepares
+its own unique profiles and removes them after stopping its workloads. See
+[setup, cleanup and policy provenance](../../deploy/sandbox/README.md) and
+[executed validation](../../notes/DEVELOP.md#phase-1a-sandbox-runtime).
 
 The local lifecycle helper defaults to the enabled mode. To test an explicit
 opt-out, run `make helm-smoke IMAGE=<local-image> HELM_SMOKE_SANDBOX=disabled`.
 Results record the selected mode in separate `helm-enabled/` or
-`helm-disabled/` artifact directories. The native amd64/arm64 CI jobs explicitly
-select disabled mode; enabled-mode environment provisioning and qualification
-remain separate work. See [development validation](../../notes/DEVELOP.md#local-helm-chart-checks)
-for procedures and recorded runtime results.
+`helm-disabled/` artifact directories. Native amd64/arm64 CI jobs run both
+modes and real setup-failure/interruption cleanup. See
+[development validation](../../notes/DEVELOP.md#phase-1a-sandbox-runtime)
+for procedures, qualified native runner combinations and remaining limits.
 
 ## Memory and external Redis
 

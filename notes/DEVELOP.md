@@ -797,16 +797,17 @@ The chart defaults to `browser.noSandbox=false`; operators can explicitly set it
 to `true` to disable Chromium's sandbox. Both modes are checked statically,
 including the generated JSON, config checksum and unchanged container security
 settings. See the chart guide for installation and upgrade examples. There is
-no automatic opt-out after startup failure. Custom seccomp/AppArmor profile
-support and environment provisioning remain separate work.
+no automatic opt-out after startup failure. Dedicated existing seccomp/AppArmor
+profile references and scoped kind preparation are described in [the node policy guide](../deploy/sandbox/README.md).
 
 The verification workflow adds chart checks and native amd64/arm64 Helm
-smoke runs to the existing browser matrix. CI explicitly selects
-`HELM_SMOKE_SANDBOX=disabled` and uploads the mode-specific result and
-diagnostics. This qualifies only disabled-mode operation when those jobs pass.
-Sandbox-enabled runner/node policy provisioning and runtime qualification
-remain separate work. Workflow syntax validation does not establish
-GitHub-hosted runner compatibility.
+smoke runs to the existing browser matrix. CI runs both
+`HELM_SMOKE_SANDBOX=enabled` and the explicit `disabled` regression, with
+mode-specific results and diagnostics. Enabled tests prepare scoped node
+policies and record Chromium's active sandbox status. The native jobs also
+inject setup failure and SIGTERM after policy load to qualify cleanup.
+Workflow syntax validation alone does not establish runner compatibility;
+executed results are recorded below.
 
 ### Helm chart verification
 
@@ -901,3 +902,56 @@ diagnostics and the successful `result.json` with `sandbox=false`,
 `sandbox_mode=disabled` and `platform=linux/amd64` are under
 `artifacts/helm-lifecycle-amd64-r1/helm-disabled/`. Earlier enabled-mode failure
 evidence remains separate at the locations recorded above.
+
+
+## Phase 1a sandbox runtime
+
+The [node policy guide](../deploy/sandbox/README.md) describes the independently
+authored MIT policies, required filesystem layout, host preparation and cleanup.
+Helm references operator-provisioned profiles; it does not install node policy
+or change runtime defaults. Localhost profiles apply to the API container, while
+bundle init containers retain the Pod defaults. The API runs as UID/GID 10001
+with no privilege escalation, all capabilities dropped and a read-only root.
+
+The seccomp policy rejects unlisted syscalls, restricts namespace creation with
+a full-width clone mask, returns ENOSYS for clone3 fallback, and bounds process,
+ioctl and socket operations. AppArmor enforces named executable/input paths and
+scratch writes without scratch execution. Its namespace-local capability
+mediation supports Chrome's identity mapping and chroot; the initial container
+capability sets remain empty. The guide explains these permissions and limits.
+
+On **2026-10-26 (Asia/Tokyo)**,
+[Actions run 40255863961](https://github.com/dayflower/webcappi/actions/runs/40255863961)
+validated implementation commit `1c65062a207179a11d813743e72238225ef056f2`
+with Go **1.26.10** and full Chrome for Testing **156.0.8078.47** on native
+Linux amd64 and arm64. Runtime evidence and build verification are separate.
+
+| Scope | Result |
+| --- | --- |
+| Go, static analysis and chart | Race tests, vet, formatting/static checks, all 58 Python tests and chart/package validation passed: 26 valid configurations, 63 rejected configurations and 78 Kubernetes resources. |
+| Browser and API | Browser, REST/profile and Redis suites passed on both native platforms. Tests under the application policies also verified CDP font selection, multilingual/emoji fonts, installed extension state and welcome tabs, complete profile clones, file/loopback HTML, selectors, images, resizing and timeout/failure cleanup. |
+| Active sandbox | Both enabled reports show Namespace/PID/network/Seccomp-BPF/TSYNC in Chrome's sandbox page, no --no-sandbox argument, enforced AppArmor, initial CapEff=0 and NoNewPrivs=1. Six stable renderers per platform had two filters against one outer/browser filter, with nested NSpid. Protected namespace symlink read errors remain explicit. |
+| Helm lifecycle | Both sandbox-enabled and explicitly disabled modes passed automatic/prepared profiles, immutable template checks, authenticated plain/TLS Redis with projected custom CA, certificate-hostname rejection, cross-Pod metadata, restart/outage recovery, upgrades, generation changes, rollback and uninstall. |
+| Negative permissions | Probes rejected reserved/high namespace bits, raw sockets, ptrace/BPF/keyring/process-memory/io_uring, initial-namespace SYS_ADMIN/root elevation and outside-canary/scratch execution. Matching baselines proved canary access and execution on all three diagnostic scratch mounts before custom-policy rejection. Four missing/incompatible policy cases failed without an unsandboxed retry. |
+| Cleanup | Normal completion, setup failure after profile loading and real SIGTERM removed the owned profiles/nodes on both platforms. Local native amd64 validation independently passed both lifecycle modes and cleanup scenarios. |
+| Build | The separate build job passed make binaries, make image-multi and ELF/OCI verification for linux/amd64 and linux/arm64. |
+
+Both native runners used Ubuntu **24.04.5 LTS**, kernel
+**6.17.0-1022-azure**, Docker **28.0.4**, kind **0.33.0**, Kubernetes
+**1.36.4**, node containerd **2.3.4**, runc **1.4.3** and libseccomp **2.6.0**.
+AppArmor was active, `kernel.unprivileged_userns_clone=1`,
+`kernel.apparmor_restrict_unprivileged_userns=1` and user namespace limits were
+nonzero. The checksummed parser was **4.0.1** with explicit ABI **4.0**.
+
+The smoke harness records image identities, policy hashes, actual browser
+arguments, Chrome's sandbox status, per-role process/filter observations and
+profile removal. Diagnostic binaries are installed at immutable image paths.
+Headed extension fixture preparation has a separate explicit sandbox-disabled
+record; the subsequent confined extension tests supply enabled-mode evidence.
+See the node policy guide for artifact names and repeatable validation commands.
+
+Qualification covers these host/runtime combinations and the supported layout.
+Hosts without AppArmor, SELinux, other kernel/CPU/runtime combinations and
+arbitrary configured paths remain unqualified. Anonymous executable memory/memfd
+and source-derived syscall alternatives remain coverage allowances rather than
+a proven minimal set. Policy or browser changes require fresh native validation.

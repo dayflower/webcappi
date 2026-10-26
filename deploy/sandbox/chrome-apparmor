@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: MIT
+# Fixed deployment layout; see README.md for supported paths and requirements.
+abi <abi/4.0>,
+
+profile WEBCAPPI_PROFILE flags=(mediate_deleted) {
+  # Keep confinement across every executable used by the service and operators.
+  /usr/bin/tini rix,
+  /usr/local/bin/webcappi rix,
+  /usr/local/bin/webcappi-{sandbox-check,policy-probe,capture-test} rix,
+  /opt/chrome/chrome rix,
+  /opt/chrome/chrome_crashpad_handler rix,
+  /{usr/,}bin/{sh,dash,bash,cat,ls,find,id,ps,grep,head,tail,wc,readlink,stat,mkdir,rm,cp,mv,tar,kill,sleep,true,false,env,timeout,uname,date} rix,
+  /usr/bin/{curl,fc-match,fc-list} rix,
+  /usr/bin/sha256sum rix,
+  /{usr/,}lib{,32,64}/** mr,
+  /opt/chrome/** mr,
+  /usr/share/** r,
+  /var/cache/fontconfig/** r,
+  /etc/{ld.so.cache,ld.so.conf,ld.so.conf.d/**,nsswitch.conf,hosts,hostname,resolv.conf,gai.conf,host.conf,localtime,passwd,group} r,
+  /etc/{ssl,fonts}/** r,
+
+  # Immutable operator inputs, including projected-volume symlink targets.
+  /etc/webcappi/** r,
+  /bundles/ r,
+  /bundles/** r,
+  /extensions/ r,
+  /extensions/** r,
+  /run/secrets/** r,
+  /run/redis-ca/** r,
+  /var/run/secrets/** r,
+
+  # Job clones, profile archives, HTML files and Unix socket directories.
+  /work/ rw,
+  owner /work/** rwkl,
+  /tmp/ rw,
+  owner /tmp/** rwkl,
+  /dev/shm/ rw,
+  owner /dev/shm/** rwkl,
+  /dev/{null,zero,full,random,urandom,tty} rw,
+  /dev/fd/** rw,
+  /dev/std{in,out,err} rw,
+  /memfd:* mrw,
+
+  # Process identity, cleanup, browser memory accounting and host discovery.
+  /proc/ r,
+  /proc/{cpuinfo,meminfo,stat,uptime,version,loadavg,filesystems,zoneinfo,vmstat} r,
+  /proc/pressure/** r,
+  /proc/{self,thread-self,[0-9]*}/ r,
+  /proc/{self,thread-self,[0-9]*}/{cmdline,status,stat,statm,maps,smaps,smaps_rollup,limits,mounts,mountinfo,cgroup,comm,oom_score,oom_score_adj} r,
+  /proc/{self,thread-self,[0-9]*}/{fd,fdinfo,ns,task}/ r,
+  /proc/{self,thread-self,[0-9]*}/{fd,fdinfo,ns}/** r,
+  /proc/{self,thread-self,[0-9]*}/task/[0-9]*/ r,
+  /proc/{self,thread-self,[0-9]*}/task/[0-9]*/{status,stat,comm} r,
+  /proc/{self,thread-self,[0-9]*}/attr/current r,
+  /proc/{self,thread-self,[0-9]*}/{uid_map,gid_map,setgroups} w,
+  owner /proc/{self,thread-self,[0-9]*}/oom_score_adj w,
+  /proc/sys/kernel/{osrelease,ostype,version,hostname,random/boot_id,random/uuid,yama/ptrace_scope} r,
+  /proc/sys/vm/overcommit_memory r,
+  /proc/sys/fs/nr_open r,
+  /proc/sys/net/** r,
+  /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
+  /sys/devices/system/{cpu,node}/** r,
+  /sys/fs/cgroup/** r,
+  /sys/class/{drm,net}/** r,
+  /sys/devices/pci*/** r,
+
+  # TLS/HTTP/Redis, DNS, loopback HTML and browser-local IPC.
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+  network netlink raw,
+  network netlink dgram,
+  network unix stream,
+  network unix dgram,
+  network unix seqpacket,
+
+  # User namespaces provide the sandbox without runtime-granted capabilities.
+  userns create,
+  # Proc identity-map access checks namespace-local CAP_SYS_ADMIN.
+  capability sys_admin,
+  capability sys_chroot,
+  capability setuid,
+  capability setgid,
+  capability setpcap,
+  ptrace (read, readby) peer=WEBCAPPI_PROFILE,
+  signal (send, receive) peer=WEBCAPPI_PROFILE,
+  signal (receive) set=(term,int,kill,cont,stop,quit,hup,usr1,usr2),
+}

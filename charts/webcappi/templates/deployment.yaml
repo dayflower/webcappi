@@ -77,6 +77,18 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: ["ALL"]}
+            seccompProfile:
+              type: {{ .Values.browser.seccompProfile.type }}
+              {{- if eq .Values.browser.seccompProfile.type "Localhost" }}
+              localhostProfile: {{ .Values.browser.seccompProfile.localhostProfile | quote }}
+              {{- end }}
+            {{- if .Values.browser.appArmorProfile.type }}
+            appArmorProfile:
+              type: {{ .Values.browser.appArmorProfile.type }}
+              {{- if eq .Values.browser.appArmorProfile.type "Localhost" }}
+              localhostProfile: {{ .Values.browser.appArmorProfile.localhostProfile | quote }}
+              {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:

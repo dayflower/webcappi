@@ -297,5 +297,57 @@ class SandboxModeTest(unittest.TestCase):
                 )
 
 
+class PolicyFailureTest(unittest.TestCase):
+    def test_permission_denial_is_recorded_without_unsandboxed_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Mock()
+            cluster.policy.apparmor = False
+            cluster.kube.side_effect = [
+                json.dumps(
+                    {
+                        "spec": {
+                            "template": {
+                                "spec": {"containers": [{"securityContext": {}}]}
+                            }
+                        }
+                    }
+                ),
+                json.dumps({"status": {"phase": "Failed"}}),
+                "Permission denied (13)",
+                "",
+                json.dumps({"status": {"phase": "Failed"}}),
+                "Permission denied (13)",
+                "",
+            ]
+            SMOKE.policy_failures(
+                cluster, argparse.Namespace(artifacts=Path(directory))
+            )
+            for name in ("missing-seccomp", "incompatible-seccomp"):
+                report = json.loads((Path(directory) / (name + ".json")).read_text())
+                self.assertFalse(report["no_sandbox"])
+                self.assertNotIn("--no-sandbox", report["browser_arguments"])
+            self.assertEqual(cluster.apply.call_count, 2)
+
+    def test_successful_browser_with_incompatible_policy_fails_and_deletes_pod(self):
+        cluster = Mock()
+        cluster.policy.apparmor = False
+        cluster.kube.side_effect = [
+            json.dumps(
+                {
+                    "spec": {
+                        "template": {"spec": {"containers": [{"securityContext": {}}]}}
+                    }
+                }
+            ),
+            json.dumps({"status": {"phase": "Succeeded"}}),
+            "",
+        ]
+        with self.assertRaisesRegex(AssertionError, "unexpectedly"):
+            SMOKE.policy_failures(cluster, argparse.Namespace())
+        self.assertEqual(
+            cluster.kube.call_args.args[:3], ("delete", "pod", "missing-seccomp")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -75,7 +75,7 @@ jobs:
     name: Browser and API (${{ matrix.arch }})
     needs: [checks, test]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -142,8 +142,12 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/chart-python"
           "$RUNNER_TEMP/chart-python/bin/pip" install PyYAML==6.0.2
           echo "$RUNNER_TEMP/chart-python/bin" >> "$GITHUB_PATH"
-      # Enabled-mode profile provisioning is qualified separately; never fall back.
+      - name: Run Helm lifecycle tests (sandbox enabled)
+        run: make helm-smoke IMAGE="$WEBCAPPI_IMAGE" HELM_SMOKE_SANDBOX=enabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-enabled.log"
+      - name: Verify sandbox setup failure and interruption cleanup
+        run: python3 scripts/sandbox/sandbox-cleanup-check.py --artifacts "$WEBCAPPI_ARTIFACTS_DIR/helm-cleanup"
       - name: Run Helm lifecycle tests (sandbox explicitly disabled)
+        if: ${{ !cancelled() }}
         run: make helm-smoke IMAGE="$WEBCAPPI_IMAGE" HELM_SMOKE_SANDBOX=disabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-disabled.log"
       - name: Upload screenshots and diagnostics
         if: ${{ always() }}
@@ -155,6 +159,8 @@ jobs:
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.log
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.json
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/*.yaml
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-cleanup/
+            ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-enabled/
             ${{ env.WEBCAPPI_ARTIFACTS_DIR }}/helm-disabled/
           if-no-files-found: warn
           retention-days: 7
