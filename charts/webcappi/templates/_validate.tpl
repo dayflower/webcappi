@@ -1,4 +1,50 @@
+{{- define "webcappi.durationMS" -}}
+{{- $number := regexFind "^[0-9]+" . | int -}}
+{{- $unit := regexFind "[a-z]+$" . -}}
+{{- mul $number (index (dict "ms" 1 "s" 1000 "m" 60000 "h" 3600000) $unit) -}}
+{{- end -}}
+
 {{- define "webcappi.validate" -}}
+{{- if .Values.ingress.enabled -}}
+{{- if not (.Capabilities.APIVersions.Has "networking.k8s.io/v1") -}}
+{{- fail "ingress requires networking.k8s.io/v1" -}}
+{{- end -}}
+{{- if empty .Values.ingress.hosts -}}{{- fail "ingress requires hosts and paths" -}}{{- end -}}
+{{- range .Values.ingress.hosts -}}
+{{- if or (empty .host) (empty .paths) -}}{{- fail "ingress requires hosts and paths" -}}{{- end -}}
+{{- range .paths -}}
+{{- if or (not (hasPrefix "/" .path)) (not (has .pathType (list "Prefix" "Exact" "ImplementationSpecific"))) -}}
+{{- fail "ingress requires absolute paths and supported pathType" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.httpRoute.enabled -}}
+{{- if not (.Capabilities.APIVersions.Has "gateway.networking.k8s.io/v1/HTTPRoute") -}}
+{{- fail "httpRoute requires gateway.networking.k8s.io/v1/HTTPRoute; install Gateway API CRDs first or pass --api-versions for offline rendering" -}}
+{{- end -}}
+{{- if empty .Values.httpRoute.parentRefs -}}{{- fail "httpRoute requires parentRefs" -}}{{- end -}}
+{{- range .Values.httpRoute.parentRefs -}}
+{{- if empty .name -}}{{- fail "httpRoute parentRefs requires name" -}}{{- end -}}
+{{- end -}}
+{{- if empty .Values.httpRoute.paths -}}{{- fail "httpRoute requires paths" -}}{{- end -}}
+{{- range .Values.httpRoute.paths -}}
+{{- if or (not (hasPrefix "/" .value)) (not (has .type (list "PathPrefix" "Exact"))) -}}
+{{- fail "httpRoute requires absolute paths and supported match type" -}}
+{{- end -}}
+{{- end -}}
+{{- $timeouts := .Values.httpRoute.timeouts -}}
+{{- range $key, $duration := $timeouts -}}
+{{- if not (regexMatch "^[0-9]{1,5}(ms|s|m|h)$" $duration) -}}{{- fail "httpRoute timeouts require an integer duration with ms, s, m or h" -}}{{- end -}}
+{{- end -}}
+{{- if and (hasKey $timeouts "request") (hasKey $timeouts "backendRequest") -}}
+{{- $request := include "webcappi.durationMS" $timeouts.request | int64 -}}
+{{- $backend := include "webcappi.durationMS" $timeouts.backendRequest | int64 -}}
+{{- if and (gt $request 0) (or (eq $backend 0) (gt $backend $request)) -}}
+{{- fail "httpRoute backendRequest must not exceed a nonzero request timeout" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- range $name, $profile := dict "seccompProfile" .Values.browser.seccompProfile "appArmorProfile" .Values.browser.appArmorProfile -}}
 {{- $allowed := list "RuntimeDefault" "Localhost" -}}
 {{- if eq $name "appArmorProfile" -}}{{- $allowed = append $allowed "" -}}{{- end -}}

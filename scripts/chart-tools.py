@@ -43,7 +43,14 @@ CHECKSUMS = {
         "arm64": "cc907ccf9e3c34523f0f32b69745265e0a6908ca85b92f41931d4537860eb83c",
     },
 }
+NETWORK_FIXTURES = {
+    "envoy-gateway.yaml": (
+        "https://github.com/envoyproxy/gateway/releases/download/v1.9.3/install.yaml",
+        "ac89b0b564e52c97c97a3f8b4d82bb594a0fbc810431fb2e6ffd91702aabebfb",
+    ),
+}
 SCHEMAS = {
+    "ingress-networking-v1.json": "4e0f63ad84c2bf22565e489d1f4b885ddaa9f6bf7cff1ddd562553760afe4d79",
     "configmap-v1.json": "e0eaddebd677c08aa092b2da2264d86ac4fc34eed112b9fac2945b3f00c1e9b1",
     "service-v1.json": "8bf019854daed511e7c174896a898173fa65d88ec5937c687a37303d4cc9351b",
     "deployment-apps-v1.json": "3725782fb01e3f27d8be2da565e2d653d7b78bf6debe5440804cea993c87b8f9",
@@ -155,6 +162,14 @@ def main():
         ):
             continue
         url = f"https://raw.githubusercontent.com/yannh/kubernetes-json-schema/{SCHEMA_REVISION}/v{KUBERNETES_VERSION}-standalone-strict/{name}"
+        write(target, fetch(url, checksum))
+    for name, (url, checksum) in NETWORK_FIXTURES.items():
+        target = args.destination / "fixtures" / name
+        if (
+            target.exists()
+            and hashlib.sha256(target.read_bytes()).hexdigest() == checksum
+        ):
+            continue
         write(target, fetch(url, checksum))
     print(f"Installed pinned chart tools in {args.destination}")
 

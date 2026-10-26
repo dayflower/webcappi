@@ -75,6 +75,34 @@ service:
   port: 8080
   annotations: {}
 
+# Controllers, Gateway API CRDs, Gateways and TLS Secrets are operator-managed.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  # - host: capture.example.com
+  #   paths:
+  #     - path: /
+  #       pathType: Prefix
+  tls: []
+
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+  # - name: public
+  #   namespace: gateway-system
+  #   sectionName: https
+  hostnames: []
+  paths:
+    - type: PathPrefix
+      value: /
+  # Explicit durations: one integer followed by ms, s, m or h; 0s disables.
+  timeouts: {}
+  # request: 45s
+  # backendRequest: 40s
+
 resources:
   requests:
     cpu: 500m

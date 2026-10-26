@@ -90,6 +90,7 @@ def main():
             success=True,
             error=None,
             skip_schema=False,
+            gateway=True,
         ):
             values = temp / f"{name}.json"
             requested = merge(base, changes or {})
@@ -105,6 +106,11 @@ def main():
                 "1.36.4",
                 "-f",
                 values,
+                *(
+                    ["--api-versions", "gateway.networking.k8s.io/v1/HTTPRoute"]
+                    if gateway
+                    else []
+                ),
                 *(["--skip-schema-validation"] if skip_schema else []),
                 success=success,
             )
@@ -113,11 +119,68 @@ def main():
                 return
             documents = list(yaml.safe_load_all(output))
             by_kind = {d["kind"]: d for d in documents}
-            assert len(documents) == 3 and set(by_kind) == {
-                "Deployment",
-                "Service",
-                "ConfigMap",
-            }
+            expected = {"Deployment", "Service", "ConfigMap"}
+            if requested.get("ingress", {}).get("enabled"):
+                expected.add("Ingress")
+            if requested.get("httpRoute", {}).get("enabled"):
+                expected.add("HTTPRoute")
+            assert len(documents) == len(expected) and set(by_kind) == expected
+            for kind in ("Ingress", "HTTPRoute"):
+                if kind not in by_kind:
+                    continue
+                network = by_kind[kind]
+                assert (
+                    network["metadata"]["name"]
+                    == by_kind["Service"]["metadata"]["name"]
+                )
+                port = requested.get("service", {}).get("port", 8080)
+                if kind == "Ingress":
+                    assert network["spec"]["rules"] == [
+                        {
+                            "host": host["host"],
+                            "http": {
+                                "paths": [
+                                    {
+                                        **path,
+                                        "backend": {
+                                            "service": {
+                                                "name": network["metadata"]["name"],
+                                                "port": {"number": port},
+                                            }
+                                        },
+                                    }
+                                    for path in host["paths"]
+                                ]
+                            },
+                        }
+                        for host in requested["ingress"]["hosts"]
+                    ]
+                    for field in ("tls", "ingressClassName"):
+                        source = "className" if field == "ingressClassName" else field
+                        assert network["spec"].get(field) == (
+                            requested["ingress"].get(source) or None
+                        )
+                else:
+                    route = requested["httpRoute"]
+                    assert network["spec"]["parentRefs"] == route["parentRefs"]
+                    assert network["spec"].get("hostnames") == (
+                        route.get("hostnames") or None
+                    )
+                    rule = network["spec"]["rules"][0]
+                    assert rule["backendRefs"] == [
+                        {"name": network["metadata"]["name"], "port": port}
+                    ]
+                    assert rule["matches"] == [
+                        {"path": path}
+                        for path in route.get(
+                            "paths", [{"type": "PathPrefix", "value": "/"}]
+                        )
+                    ]
+                    assert rule.get("timeouts") == (route.get("timeouts") or None)
+                key = "ingress" if kind == "Ingress" else "httpRoute"
+                assert network["metadata"].get("annotations") == (
+                    requested[key].get("annotations") or None
+                )
             deployment, service, configmap = (
                 by_kind[k] for k in ("Deployment", "Service", "ConfigMap")
             )
@@ -369,6 +432,256 @@ def main():
         second = render("second", release="first-webcappi")
         assert first[0]["metadata"]["name"] != second[0]["metadata"]["name"]
         assert first[1]["spec"]["selector"] != second[1]["spec"]["selector"]
+        ingress = {
+            "ingress": {
+                "enabled": True,
+                "className": "traefik",
+                "annotations": {"example.com/setting": "enabled"},
+                "hosts": [
+                    {
+                        "host": "capture.example.com",
+                        "paths": [{"path": "/", "pathType": "Prefix"}],
+                    }
+                ],
+                "tls": [
+                    {"secretName": "capture-tls", "hosts": ["capture.example.com"]}
+                ],
+            }
+        }
+        route = {
+            "httpRoute": {
+                "enabled": True,
+                "parentRefs": [
+                    {
+                        "name": "public",
+                        "namespace": "gateway-system",
+                        "sectionName": "https",
+                    }
+                ],
+                "hostnames": ["capture.example.com"],
+                "annotations": {"example.com/setting": "enabled"},
+                "timeouts": {"request": "45s", "backendRequest": "40000ms"},
+            }
+        }
+        render("ingress", ingress)
+        render("httproute", route)
+        render(
+            "both-networks-port",
+            merge(merge(ingress, route), {"service": {"port": 9090}}),
+        )
+        render(
+            "ingress-port",
+            merge(
+                ingress,
+                {"service": {"port": 80}, "ingress": {"className": "", "tls": []}},
+            ),
+        )
+        render(
+            "route-defaults",
+            {"httpRoute": {"enabled": True, "parentRefs": [{"name": "public"}]}},
+        )
+        render(
+            "route-zero-timeout",
+            merge(
+                route,
+                {"httpRoute": {"timeouts": {"request": "0s", "backendRequest": "0s"}}},
+            ),
+        )
+        render(
+            "route-multiple-paths",
+            merge(
+                route,
+                {
+                    "httpRoute": {
+                        "paths": [
+                            {"type": "Exact", "value": "/capture"},
+                            {"type": "PathPrefix", "value": "/healthz"},
+                        ]
+                    }
+                },
+            ),
+        )
+        render(
+            "no-gateway-api",
+            route,
+            success=False,
+            error="requires gateway.networking.k8s.io/v1/HTTPRoute",
+            gateway=False,
+        )
+        helper_rejections += 1
+        network_invalid = [
+            ("ingress-no-hosts", {"ingress": {"enabled": True}}, "hosts"),
+            (
+                "ingress-empty-host",
+                merge(
+                    ingress,
+                    {
+                        "ingress": {
+                            "hosts": [
+                                {
+                                    "host": "",
+                                    "paths": [{"path": "/", "pathType": "Prefix"}],
+                                }
+                            ]
+                        }
+                    },
+                ),
+                "host",
+            ),
+            (
+                "ingress-no-paths",
+                merge(
+                    ingress,
+                    {
+                        "ingress": {
+                            "hosts": [{"host": "capture.example.com", "paths": []}]
+                        }
+                    },
+                ),
+                "paths",
+            ),
+            (
+                "ingress-path",
+                merge(
+                    ingress,
+                    {
+                        "ingress": {
+                            "hosts": [
+                                {
+                                    "host": "capture.example.com",
+                                    "paths": [
+                                        {"path": "relative", "pathType": "Prefix"}
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                ),
+                "path",
+            ),
+            (
+                "ingress-path-type",
+                merge(
+                    ingress,
+                    {
+                        "ingress": {
+                            "hosts": [
+                                {
+                                    "host": "capture.example.com",
+                                    "paths": [{"path": "/", "pathType": "Unknown"}],
+                                }
+                            ]
+                        }
+                    },
+                ),
+                "pathType",
+            ),
+            (
+                "ingress-tls-secret",
+                merge(
+                    ingress, {"ingress": {"tls": [{"hosts": ["capture.example.com"]}]}}
+                ),
+                "secretName",
+            ),
+            ("route-no-parents", {"httpRoute": {"enabled": True}}, "parentRefs"),
+            (
+                "route-parent-name",
+                {
+                    "httpRoute": {
+                        "enabled": True,
+                        "parentRefs": [{"namespace": "gateway-system"}],
+                    }
+                },
+                "name",
+            ),
+            (
+                "route-bad-parent",
+                merge(
+                    route,
+                    {
+                        "httpRoute": {
+                            "parentRefs": [{"name": "public", "namespace": "bad/name"}]
+                        }
+                    },
+                ),
+                "namespace",
+            ),
+            ("route-no-paths", merge(route, {"httpRoute": {"paths": []}}), "paths"),
+            (
+                "route-path",
+                merge(
+                    route,
+                    {
+                        "httpRoute": {
+                            "paths": [{"type": "PathPrefix", "value": "relative"}]
+                        }
+                    },
+                ),
+                "value",
+            ),
+            (
+                "route-regex",
+                merge(
+                    route,
+                    {
+                        "httpRoute": {
+                            "paths": [{"type": "RegularExpression", "value": "/.*"}]
+                        }
+                    },
+                ),
+                "type",
+            ),
+            (
+                "route-hostname",
+                merge(
+                    route, {"httpRoute": {"hostnames": ["https://capture.example.com"]}}
+                ),
+                "hostnames",
+            ),
+            (
+                "route-timeout",
+                merge(route, {"httpRoute": {"timeouts": {"request": "1.5s"}}}),
+                "request",
+            ),
+            (
+                "route-backend-timeout",
+                merge(
+                    route,
+                    {
+                        "httpRoute": {
+                            "timeouts": {"request": "30s", "backendRequest": "1m"}
+                        }
+                    },
+                ),
+                "must not exceed",
+            ),
+            (
+                "route-unbounded-backend",
+                merge(route, {"httpRoute": {"timeouts": {"backendRequest": "0s"}}}),
+                "must not exceed",
+            ),
+            (
+                "route-raw-backends",
+                merge(route, {"httpRoute": {"backendRefs": []}}),
+                "backendRefs",
+            ),
+            (
+                "ingress-boolean-annotation",
+                {"ingress": {"annotations": {"example.com/setting": True}}},
+                "annotations",
+            ),
+        ]
+        for name, changes, error in (
+            network_invalid[:1]
+            + network_invalid[2:3]
+            + network_invalid[6:8]
+            + network_invalid[9:10]
+            + network_invalid[14:16]
+        ):
+            render(
+                "helper-" + name, changes, success=False, error=error, skip_schema=True
+            )
+            helper_rejections += 1
         invalid = [
             ("memory-replicas", {"replicaCount": 2}, "requires cache.backend=redis"),
             ("replica-zero", {"replicaCount": 0}, "replicaCount"),
@@ -603,6 +916,38 @@ def main():
                 "1 MiB limit",
             )
         )
+        invalid.extend(network_invalid)
+        for host in (
+            "https://capture.example.com",
+            "127.0.0.1",
+            "a" * 64 + ".example.com",
+        ):
+            invalid.append(
+                (
+                    "bad-ingress-host-" + str(len(invalid)),
+                    merge(
+                        ingress,
+                        {
+                            "ingress": {
+                                "hosts": [
+                                    {
+                                        "host": host,
+                                        "paths": [{"path": "/", "pathType": "Prefix"}],
+                                    }
+                                ]
+                            }
+                        },
+                    ),
+                    "host",
+                )
+            )
+            invalid.append(
+                (
+                    "bad-route-host-" + str(len(invalid)),
+                    merge(route, {"httpRoute": {"hostnames": [host]}}),
+                    "hostnames",
+                )
+            )
         for name, changes, error in invalid:
             render(name, changes, success=False, error=error)
         validator = temp / "config-check"
@@ -615,6 +960,23 @@ def main():
             cwd=ROOT,
         )
         run(validator, *configs)
+        # Derive the v1 schema from the checksummed controller's Gateway API CRD.
+        settings = __import__("runpy").run_path(str(ROOT / "scripts/chart-tools.py"))
+        fixture = TOOLS / "fixtures/envoy-gateway.yaml"
+        assert (
+            hashlib.sha256(fixture.read_bytes()).hexdigest()
+            == settings["NETWORK_FIXTURES"][fixture.name][1]
+        )
+        crd = next(
+            d
+            for d in yaml.safe_load_all(fixture.read_text())
+            if d
+            and d["kind"] == "CustomResourceDefinition"
+            and d["metadata"]["name"] == "httproutes.gateway.networking.k8s.io"
+        )
+        version = next(v for v in crd["spec"]["versions"] if v["name"] == "v1")
+        route_schema = temp / "httproute_v1.json"
+        route_schema.write_text(json.dumps(version["schema"]["openAPIV3Schema"]))
         schema = str(TOOLS / "schemas") + "/{{.ResourceKind}}{{.KindSuffix}}.json"
         print(
             run(
@@ -623,6 +985,8 @@ def main():
                 "-summary",
                 "-schema-location",
                 schema,
+                "-schema-location",
+                str(temp) + "/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json",
                 *manifests,
             ).strip()
         )
