@@ -1012,3 +1012,40 @@ The [chart guide](../charts/webcappi/README.md#ingress-and-gateway-api) provides
 operator-managed TLS, separate-namespace Gateway, transport/body policy,
 capability and update/rollback examples. The tested examples publish root paths;
 URL-prefix rewrites and other controllers require separate qualification.
+
+### Local Phase 2 execution
+
+On **2026-10-26 (Asia/Tokyo)**, implementation commit
+`73818abac5d5e2bd46364e8896c5c81e9afe9580` passed
+`make helm-network-smoke IMAGE=webcappi:helm-cleanroom` on native **linux/amd64**.
+It reused the unchanged application/browser image, source image ID
+`sha256:88168024c48aaf60512f7097ea59f41f5162494426467e71c12b565ad0702e99`;
+the harness built its own disposable diagnostic image. The host used Ubuntu
+**24.04.5 LTS**, kernel **6.8.0-147-generic**, Docker **29.9.1** and the pinned
+kind **0.33.0** / Kubernetes **1.36.4** stack, with containerd **2.3.4** inside
+the node. Chromium's sandbox was enabled with the scoped Phase 1a policies.
+
+- Ingress and HTTPRoute independently passed HTTP/TLS captures, token rejection,
+  private Service DNS targets, 1,100,075-byte delayed HTML POSTs, rejection above
+  2 MiB, route updates, rollback, uninstall and external-resource preservation.
+- HTTPRoute reported fresh Accepted/ResolvedRefs for the requested parent;
+  independently configured backend and request deadlines returned 504 after
+  **6.006 s** and **6.008 s**, respectively. Each probe started exactly one
+  capture and cancellation removed its capture scratch directories.
+- `result.json` reports success after owned cluster/image/policy cleanup;
+  AppArmor removal is recorded. The shared kind network was retained.
+- `make chart-check` passed **33** valid configurations, **95** rejected
+  configurations and **107** resources with no schema skips; strict Go JSON
+  loading and package comparison passed. All **63** Python tests, Go race
+  tests, vet, formatting/static analysis and Actionlint passed.
+
+Evidence is under `artifacts/helm-phase2-r5/helm-network/`, including
+`network.json`, `result.json`, `chromium-sandbox.json`, route status,
+port-forward/controller logs and eight PNG captures. Earlier failed fixture
+iterations remain separate under `artifacts/helm-phase2-r2/` through `-r4/`
+and `artifacts/helm-phase2-local/`. Native arm64 was not
+run locally. Native amd64/arm64 Actions results for the final PR are linked
+from [PR #5 checks](https://github.com/dayflower/webcappi/pull/5/checks),
+including the existing browser suites and both sandbox lifecycle modes.
+Application/browser sources and build recipes were unchanged; no multi-platform
+application rebuild was performed locally for Phase 2.
