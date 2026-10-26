@@ -10,6 +10,14 @@ imagePullSecrets: []
 # Chromium's sandbox is enabled by default. Set true only as an explicit opt-out.
 browser:
   noSandbox: false
+  # Existing node profiles, applied only to the API container.
+  seccompProfile:
+    type: RuntimeDefault
+    localhostProfile: ""
+  # Empty type preserves the runtime's AppArmor default on hosts without AppArmor.
+  appArmorProfile:
+    type: ""
+    localhostProfile: ""
 
 # Create the Secret separately. Credentials are read only at application startup.
 auth:

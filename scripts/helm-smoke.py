@@ -3,6 +3,7 @@
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import io
 import json
 import os
@@ -11,6 +12,8 @@ import platform
 import re
 import runpy
 import signal
+import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -19,6 +22,7 @@ import urllib.parse
 import uuid
 
 from smoke_support import HTTPClient, PYTHON_IMAGE, REDIS_IMAGE, ROOT
+from sandbox.sandbox_support import POLICY, SandboxPolicy
 
 TOOL_SETTINGS = runpy.run_path(str(ROOT / "scripts/chart-tools.py"))
 TOOLS = ROOT / "bin/chart-tools"
@@ -70,6 +74,10 @@ class Cluster:
         self.args = args
         self.root = root
         self.name = "webcappi-helm-" + uuid.uuid4().hex[:12]
+        self.policy = None
+        if getattr(args, "sandbox", "disabled") == "enabled":
+            self.policy = SandboxPolicy(self.name, root, run, TOOLS / "apparmor_parser")
+            args.policy_record = self.policy.record
         self.env = {
             k: v
             for k, v in os.environ.items()
@@ -102,6 +110,11 @@ class Cluster:
     def __enter__(self):
         try:
             print(f"Creating disposable cluster {self.name}", flush=True)
+            extra = []
+            if self.policy:
+                path = self.root / "kind.json"
+                path.write_text(json.dumps(self.policy.configuration()))
+                extra = ["--config", path]
             run(
                 self.args.kind,
                 "create",
@@ -114,9 +127,12 @@ class Cluster:
                 TOOL_SETTINGS["NODE_IMAGE"],
                 "--wait",
                 "120s",
+                *extra,
                 env=self.env,
                 timeout=240,
             )
+            if self.policy:
+                self.policy.install()
             self.kube("create", "namespace", NAMESPACE)
             version = json.loads(self.kube("version", "-o", "json"))["serverVersion"][
                 "gitVersion"
@@ -172,6 +188,13 @@ class Cluster:
             (self.args.artifacts / "diagnostic-error.log").write_text(str(error))
 
     def cleanup(self):
+        try:
+            if self.policy:
+                self.policy.cleanup()
+        finally:
+            self.delete_cluster()
+
+    def delete_cluster(self):
         run(
             self.args.kind,
             "delete",
@@ -298,6 +321,26 @@ class Cluster:
 
 
 def fixture_resources(cluster):
+    certificate = cluster.root / "redis.crt"
+    key = cluster.root / "redis.key"
+    run(
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        key,
+        "-out",
+        certificate,
+        "-days",
+        "1",
+        "-subj",
+        "/CN=redis",
+        "-addext",
+        "subjectAltName=DNS:redis",
+    )
     cluster.apply(
         {
             "apiVersion": "v1",
@@ -310,6 +353,21 @@ def fixture_resources(cluster):
             "kind": "Secret",
             "metadata": {"name": "redis-auth"},
             "stringData": {"password": "redis-smoke-password"},
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": "redis-tls"},
+            "stringData": {
+                "tls.crt": certificate.read_text(),
+                "tls.key": key.read_text(),
+            },
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": "redis-ca"},
+            "data": {"ca.crt": certificate.read_text()},
         },
     )
     for name, image, port, command in [
@@ -335,6 +393,16 @@ def fixture_resources(cluster):
                 "noeviction",
                 "--requirepass",
                 "redis-smoke-password",
+                "--tls-port",
+                "6380",
+                "--tls-cert-file",
+                "/tls/tls.crt",
+                "--tls-key-file",
+                "/tls/tls.key",
+                "--tls-ca-cert-file",
+                "/tls/tls.crt",
+                "--tls-auth-clients",
+                "no",
             ],
         ),
     ]:
@@ -346,6 +414,13 @@ def fixture_resources(cluster):
             "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 1},
         }
         pod = {"containers": [container]}
+        ports = [{"name": "main", "port": port, "targetPort": port}]
+        if name == "redis":
+            container["volumeMounts"] = [
+                {"name": "tls", "mountPath": "/tls", "readOnly": True}
+            ]
+            pod["volumes"] = [{"name": "tls", "secret": {"secretName": "redis-tls"}}]
+            ports.append({"name": "tls", "port": 6380, "targetPort": 6380})
         if name == "fixture":
             cluster.apply(
                 {
@@ -383,7 +458,7 @@ def fixture_resources(cluster):
                 "metadata": {"name": name},
                 "spec": {
                     "selector": {"fixture": name},
-                    "ports": [{"port": port, "targetPort": port}],
+                    "ports": ports,
                 },
             },
         )
@@ -504,12 +579,510 @@ def prepare_bundle(cluster, pod, image, bundle_image, root, sandbox):
     return json.loads((context / "default/bundle.json").read_text())
 
 
+def docker_policy_diagnosis(cluster, args):
+    cases = [("runtime-default", [])]
+    seccomp = ["--security-opt", f"seccomp={POLICY / 'chrome-seccomp.json'}"]
+    cases.append(("seccomp-only", seccomp))
+    if cluster.policy.apparmor:
+        cases.append(
+            (
+                "seccomp-and-apparmor",
+                [*seccomp, "--security-opt", "apparmor=" + cluster.policy.name],
+            )
+        )
+    records = []
+    for label, policy in cases:
+        name = cluster.name + "-" + label
+        try:
+            command = [
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                name,
+                "--network",
+                "none",
+                "--user",
+                "10001:10001",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--tmpfs",
+                "/tmp:rw,mode=1777",
+                "--tmpfs",
+                "/work:rw,uid=10001,gid=10001,mode=700",
+                *policy,
+                "--entrypoint",
+                "/opt/chrome/chrome",
+                args.image,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-first-run",
+                "--user-data-dir=/tmp/diagnose",
+                "--dump-dom",
+                "about:blank",
+            ]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            records.append(
+                {
+                    "case": label,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            )
+            if label == cases[-1][0]:
+                assert result.returncode == 0, records[-1]
+        finally:
+            run("docker", "rm", "-f", name, check=False)
+    (args.artifacts / "docker-layers.json").write_text(
+        json.dumps(records, indent=2) + "\n"
+    )
+
+
+def diagnostic_image(args, root, aliases):
+    context = root / "diagnostic-image"
+    context.mkdir()
+    shutil.copytree(ROOT / "testdata", context / "testdata")
+    (context / "capture-cwd").mkdir()
+    (context / "capture-cwd/.keep").touch()
+    run(
+        *shlex.split(os.environ.get("GO", "go")),
+        "build",
+        "-o",
+        context / "webcappi-sandbox-check",
+        ROOT / "scripts/sandbox/sandbox-check.go",
+        ROOT / "scripts/sandbox/sandbox-process.go",
+        env=dict(os.environ, CGO_ENABLED="0"),
+    )
+    run(
+        *shlex.split(os.environ.get("GO", "go")),
+        "test",
+        "-c",
+        "./internal/capture",
+        "-o",
+        context / "webcappi-capture-test",
+        env=dict(os.environ, CGO_ENABLED="0"),
+    )
+    run(
+        "cc",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-static",
+        "-o",
+        context / "webcappi-policy-probe",
+        ROOT / "scripts/sandbox/policy-probe.c",
+    )
+    (context / "Dockerfile").write_text(
+        f"FROM {args.image}\n"
+        "COPY --chmod=0555 --chown=0:0 webcappi-sandbox-check webcappi-policy-probe webcappi-capture-test /usr/local/bin/\n"
+        "COPY --chown=0:0 testdata /bundles/test-source/testdata/\n"
+        "COPY --chown=0:0 capture-cwd /bundles/test-source/internal/capture/\n"
+    )
+    image = "webcappi-helm-diagnostic:" + uuid.uuid4().hex[:12]
+    aliases.append(image)
+    run("docker", "build", "--pull=false", "-t", image, context, timeout=180)
+    args.source_image = args.image
+    args.image = image
+    args.image_record = {
+        "source_ref": args.source_image,
+        "source_id": run(
+            "docker", "image", "inspect", args.source_image, "--format", "{{.Id}}"
+        ),
+        "diagnostic_ref": image,
+        "diagnostic_id": run(
+            "docker", "image", "inspect", image, "--format", "{{.Id}}"
+        ),
+        "diagnostics_sha256": {
+            name: hashlib.sha256((context / name).read_bytes()).hexdigest()
+            for name in (
+                "webcappi-sandbox-check",
+                "webcappi-policy-probe",
+                "webcappi-capture-test",
+            )
+        },
+    }
+
+
+def docker_browser_policy_tests(cluster, args):
+    arch = args.runtime_platform.split("/")[1]
+    headed_image = f"webcappi-test-browser:156.0.8078.47-{arch}"
+    if run("docker", "image", "inspect", headed_image, check=False) is None:
+        run(
+            "docker",
+            "buildx",
+            "build",
+            "--load",
+            "--target",
+            "test-browser",
+            "-t",
+            headed_image,
+            ROOT,
+            timeout=600,
+        )
+    name = cluster.name + "-extension-preparation"
+    prepared = cluster.root / "prepared-extension"
+    prepared.mkdir()
+    try:
+        # Headed fixture installation is separate from sandbox-enabled acceptance.
+        command = [
+            "docker",
+            "run",
+            "--name",
+            name,
+            "--shm-size=512m",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            "/work:uid=10001,gid=10001,mode=700",
+            "--tmpfs",
+            "/tmp",
+            "-v",
+            f"{cluster.root / 'diagnostic-image/webcappi-capture-test'}:/app/capture.test:ro",
+            "-v",
+            f"{cluster.root / 'diagnostic-image/testdata'}:/bundles/test-source/testdata:ro",
+            "-w",
+            "/bundles/test-source/internal/capture",
+            "-e",
+            "WEBCAPPI_TEST_BROWSER=/opt/chrome/chrome",
+            "-e",
+            "WEBCAPPI_TEST_NO_SANDBOX=1",
+            "-e",
+            "WEBCAPPI_TEST_ARTIFACTS=/home/webcappi",
+            headed_image,
+            "xvfb-run",
+            "-a",
+            "/app/capture.test",
+            "-test.run=^TestExtensionProfileLifecycle$",
+            "-test.v",
+            "-test.timeout=180s",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=210)
+        (args.artifacts / "extension-fixture-preparation.json").write_text(
+            json.dumps(
+                {
+                    "sandbox": False,
+                    "purpose": "external headed fixture preparation",
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        run("docker", "cp", name + ":/home/webcappi/user-data", prepared)
+    finally:
+        run("docker", "rm", "-f", name, check=False)
+    for path in [prepared, *prepared.rglob("*")]:
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    name = cluster.name + "-confined-browser-tests"
+    try:
+        command = [
+            "docker",
+            "run",
+            "--name",
+            name,
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--security-opt",
+            f"seccomp={POLICY / 'chrome-seccomp.json'}",
+            "--shm-size=512m",
+            "--tmpfs",
+            "/work:uid=10001,gid=10001,mode=700",
+            "--tmpfs",
+            "/tmp:mode=1777",
+            "-v",
+            f"{prepared}:/bundles/prepared-extension:ro",
+            "-w",
+            "/bundles/test-source/internal/capture",
+            "-e",
+            "WEBCAPPI_TEST_BROWSER=/opt/chrome/chrome",
+            "-e",
+            "WEBCAPPI_TEST_NO_SANDBOX=0",
+            "-e",
+            "WEBCAPPI_TEST_PREPARED_USER_DATA=/bundles/prepared-extension/user-data",
+        ]
+        if cluster.policy.apparmor:
+            command += ["--security-opt", "apparmor=" + cluster.policy.name]
+        command += [
+            "--entrypoint",
+            "/usr/local/bin/webcappi-capture-test",
+            args.image,
+            "-test.run=^Test(ExtensionProfileLifecycle|RenderedFontFamilies|MultilingualRenderedFonts|LoopbackHTMLCharset|HTMLCapture|ProfileReadySelectors|TemporaryProfileLifecycle|NewProfileCleansUpFailedStartup)$",
+            "-test.v",
+            "-test.timeout=180s",
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=210)
+        (args.artifacts / "confined-browser-tests.json").write_text(
+            json.dumps(
+                {
+                    "sandbox": True,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    finally:
+        run("docker", "rm", "-f", name, check=False)
+
+
+def docker_policy_denials(cluster, args):
+    canary = cluster.root / "outside-canary"
+    canary.write_text("independent policy validation\n")
+    canary.chmod(0o666)
+    common = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "10001:10001",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--security-opt",
+        f"seccomp={POLICY / 'chrome-seccomp.json'}",
+        "--tmpfs",
+        "/work:rw,exec,uid=10001,gid=10001,mode=700",
+        "--tmpfs",
+        "/tmp:rw,exec,mode=1777",
+        "--tmpfs",
+        "/dev/shm:rw,exec,mode=1777,size=256m",
+        "--mount",
+        f"type=bind,source={canary},target=/review-deny/canary",
+    ]
+    baseline = (
+        ": >> /review-deny/canary; "
+        "for area in /work /tmp /dev/shm; do "
+        'cp /usr/local/bin/webcappi-policy-probe "$area/baseline"; '
+        'if "$area/baseline" --execution-canary; then exit 1; '
+        'else test "$?" = 42; fi; rm "$area/baseline"; done'
+    )
+    cases = [
+        (
+            "runtime-default-apparmor-baseline",
+            ["--entrypoint", "/bin/sh"],
+            ["-ec", baseline],
+        ),
+        (
+            "application-policy",
+            [
+                "--security-opt",
+                "apparmor=" + cluster.policy.name,
+                "--entrypoint",
+                "/usr/local/bin/webcappi-policy-probe",
+            ],
+            ["--canary", "/review-deny/canary"],
+        ),
+    ]
+    records = []
+    for label, options, command in cases:
+        name = cluster.name + "-negative-" + label
+        try:
+            argv = [*common, "--name", name, *options, args.image, *command]
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            records.append(
+                {
+                    "case": label,
+                    "command": argv,
+                    "exit_code": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                }
+            )
+            (args.artifacts / "docker-policy-denials.json").write_text(
+                json.dumps(records, indent=2) + "\n"
+            )
+            assert result.returncode == 0, records[-1]
+        finally:
+            run("docker", "rm", "-f", name, check=False)
+
+
+def sandbox_evidence(cluster, pod, args):
+    output = cluster.kube(
+        "exec", pod, "--", "/usr/local/bin/webcappi-sandbox-check", args.sandbox
+    )
+    evidence = json.loads(output)
+    status = cluster.kube("exec", pod, "--", "cat", "/proc/self/status")
+    fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    assert fields["NoNewPrivs"].strip() == "1"
+    assert int(fields["CapEff"].strip(), 16) == 0
+    evidence["container_status"] = {
+        key: fields[key].strip() for key in ("NoNewPrivs", "CapEff", "Seccomp")
+    }
+    if cluster.policy and cluster.policy.apparmor:
+        label = cluster.kube("exec", pod, "--", "cat", "/proc/self/attr/current")
+        assert label == cluster.policy.name + " (enforce)", label
+        evidence["apparmor_label"] = label
+        output = cluster.kube("exec", pod, "--", "/usr/local/bin/webcappi-policy-probe")
+        (args.artifacts / "policy-probes.log").write_text(output + "\n")
+    assert evidence["no_sandbox"] is (args.sandbox == "disabled")
+    (args.artifacts / "chromium-sandbox.json").write_text(
+        json.dumps(evidence, indent=2) + "\n"
+    )
+
+
+def policy_failures(cluster, args):
+    spec = json.loads(
+        cluster.kube("get", "deployment", "first-webcappi", "-o", "json")
+    )["spec"]["template"]["spec"]
+    cases = [
+        (
+            "missing-seccomp",
+            "seccompProfile",
+            {"type": "Localhost", "localhostProfile": "webcappi/missing.json"},
+        ),
+        ("incompatible-seccomp", "seccompProfile", {"type": "RuntimeDefault"}),
+    ]
+    if cluster.policy.apparmor:
+        cases.append(
+            (
+                "incompatible-apparmor",
+                "appArmorProfile",
+                cluster.policy.incompatible_apparmor(),
+            )
+        )
+        cases.append(
+            (
+                "missing-apparmor",
+                "appArmorProfile",
+                {
+                    "type": "Localhost",
+                    "localhostProfile": cluster.policy.name + "-missing",
+                },
+            )
+        )
+    for name, field, profile in cases:
+        pod_spec = json.loads(json.dumps(spec))
+        pod_spec["restartPolicy"] = "Never"
+        api = pod_spec["containers"][0]
+        api["securityContext"][field] = profile
+        api["command"] = ["/opt/chrome/chrome"]
+        api["args"] = [
+            "--headless=new",
+            "--no-first-run",
+            "--disable-gpu",
+            "--user-data-dir=/tmp/failure",
+            "--dump-dom",
+            "about:blank",
+        ]
+        for key in ("startupProbe", "readinessProbe", "livenessProbe"):
+            api.pop(key, None)
+        cluster.apply(
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name},
+                "spec": pod_spec,
+            }
+        )
+        try:
+            deadline = time.monotonic() + 45
+            while True:
+                pod = json.loads(cluster.kube("get", "pod", name, "-o", "json"))
+                status = pod.get("status", {})
+                states = [
+                    c.get("state", {}) for c in status.get("containerStatuses", [])
+                ]
+                if status.get("phase") == "Succeeded":
+                    raise AssertionError(f"{name} unexpectedly ran Chrome successfully")
+                rejected = status.get("phase") == "Failed" or any(
+                    s.get("waiting", {}).get("reason")
+                    in ("CreateContainerError", "CreateContainerConfigError")
+                    for s in states
+                )
+                if rejected:
+                    logs = cluster.kube("logs", name, check=False) or ""
+                    if name.startswith("incompatible-"):
+                        assert (
+                            "No usable sandbox" in logs
+                            or "Operation not permitted" in logs
+                            or "Permission denied" in logs
+                        ), logs
+                    (args.artifacts / (name + ".json")).write_text(
+                        json.dumps(
+                            {
+                                "status": status,
+                                "logs": logs,
+                                "browser_arguments": api["args"],
+                                "no_sandbox": False,
+                            },
+                            indent=2,
+                        )
+                        + "\n"
+                    )
+                    break
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"{name} did not produce a useful policy rejection: {status}"
+                    )
+                time.sleep(0.5)
+        finally:
+            cluster.kube("delete", "pod", name, "--wait=true", "--timeout=45s")
+    print(
+        "PASS: missing/incompatible policy fails without an unsandboxed retry",
+        flush=True,
+    )
+
+
 def suite(cluster, args, root, aliases):
     cluster.load(args.image)
+    info = json.loads(cluster.kube("get", "nodes", "-o", "json"))["items"][0]["status"][
+        "nodeInfo"
+    ]
+    args.runtime_record = {
+        key: info[key]
+        for key in (
+            "architecture",
+            "osImage",
+            "kernelVersion",
+            "containerRuntimeVersion",
+            "kubeletVersion",
+        )
+    }
+    if not cluster.policy:
+        args.policy_record = {
+            "preparation": "none",
+            "seccomp": "RuntimeDefault",
+            "apparmor": "runtime default",
+        }
+    if cluster.policy:
+        docker_policy_diagnosis(cluster, args)
+        docker_browser_policy_tests(cluster, args)
+        if cluster.policy.apparmor:
+            docker_policy_denials(cluster, args)
     fixture_resources(cluster)
     values = {
         "image": image_values(args.image),
-        "browser": {"noSandbox": args.sandbox == "disabled"},
+        "browser": {
+            "noSandbox": args.sandbox == "disabled",
+            **(cluster.policy.values if cluster.policy else {}),
+        },
         "auth": {"existingSecret": "api-auth", "tokenKey": "access-token"},
         "capture": {"maxAgeSeconds": 3600},
     }
@@ -567,6 +1140,9 @@ def suite(cluster, args, root, aliases):
         "-ec",
         "test -w /work && test -w /tmp && test -w /dev/shm && ! test -w /etc/webcappi/config.json",
     )
+    sandbox_evidence(cluster, first_pod, args)
+    if cluster.policy:
+        policy_failures(cluster, args)
     bundle_image = "webcappi-helm-bundle:" + cluster.name
     aliases.append(bundle_image)
     descriptor = prepare_bundle(
@@ -611,6 +1187,61 @@ def suite(cluster, args, root, aliases):
     cluster.upgrade("first", values)
     with cluster.forward("service/first-webcappi") as client:
         tag = capture(client, path, args.artifacts, "redis-one")
+    values["cache"]["redis"].update(
+        address="redis:6380",
+        tls=True,
+        ca={"kind": "ConfigMap", "name": "redis-ca", "key": "ca.crt"},
+    )
+    cluster.upgrade("first", values)
+    with cluster.forward("service/first-webcappi") as client:
+        tag = capture(client, path, args.artifacts, "redis-tls")
+    pod = cluster.pods("first")[0]
+    invalid = json.loads(
+        cluster.kube("exec", pod, "--", "cat", "/etc/webcappi/config.json")
+    )
+    invalid["cache"]["redis"]["address"] = "redis.smoke.svc:6380"
+    try:
+        cluster.kube(
+            "exec",
+            "-i",
+            pod,
+            "--",
+            "sh",
+            "-ec",
+            "cat > /tmp/invalid-redis-tls.json",
+            input=json.dumps(invalid),
+        )
+        result = subprocess.run(
+            [
+                str(cluster.args.kubectl),
+                "--namespace",
+                NAMESPACE,
+                "exec",
+                pod,
+                "--",
+                "webcappi",
+                "check",
+                "-config",
+                "/tmp/invalid-redis-tls.json",
+            ],
+            env=cluster.env,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        record = {
+            "exit_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+        (args.artifacts / "redis-tls-hostname-rejection.json").write_text(
+            json.dumps(record, indent=2) + "\n"
+        )
+        assert result.returncode != 0 and "certificate" in (
+            result.stdout + result.stderr
+        ), record
+    finally:
+        cluster.kube("exec", pod, "--", "rm", "-f", "/tmp/invalid-redis-tls.json")
     values["replicaCount"] = 2
     cluster.upgrade("first", values)
     pods = cluster.pods("first")
@@ -643,7 +1274,7 @@ def suite(cluster, args, root, aliases):
         client.wait_ready(timeout=30)
         tag = capture(client, path, args.artifacts, "redis-recovery")
     print(
-        "PASS: authenticated external Redis, scale, cross-Pod metadata, restart reuse and outage probes",
+        "PASS: authenticated plain/TLS Redis, custom CA, hostname rejection, scale, shared metadata, restart and outage probes",
         flush=True,
     )
 
@@ -700,7 +1331,9 @@ def suite(cluster, args, root, aliases):
             )
             == before
         )
-        cluster.kube("exec", pod, "--", "sh", "-ec", "! touch /bundles/.must-not-write")
+        cluster.kube(
+            "exec", pod, "--", "sh", "-ec", "! ( : > /bundles/.must-not-write )"
+        )
     revision = json.loads(cluster.helm("history", "first", "-o", "json"))[-1][
         "revision"
     ]
@@ -794,9 +1427,13 @@ def write_result(args, result, error=None):
         "sandbox": args.sandbox == "enabled",
         "sandbox_mode": args.sandbox,
         "image": args.image,
+        "source_image": getattr(args, "source_image", args.image),
         "kubernetes": TOOL_SETTINGS["KUBERNETES_VERSION"],
         "platform": args.runtime_platform,
     }
+    report["policy"] = getattr(args, "policy_record", None)
+    report["images"] = getattr(args, "image_record", None)
+    report["environment"] = getattr(args, "runtime_record", None)
     if error is not None:
         report["error"] = str(error)
     (args.artifacts / "result.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -827,6 +1464,7 @@ def main():
     try:
         with image_aliases() as aliases:
             with tempfile.TemporaryDirectory(prefix="webcappi-helm-") as temporary:
+                diagnostic_image(args, Path(temporary), aliases)
                 with Cluster(args, Path(temporary)) as cluster:
                     suite(cluster, args, Path(temporary), aliases)
         write_result(args, "passed")

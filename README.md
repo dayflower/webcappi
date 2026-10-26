@@ -823,9 +823,10 @@ so the initContainer can read private bundle files and copy them as that user.
 
 The default keeps Chromium's own sandbox enabled. Your node/container policy
 must allow Chromium's user-namespace sandbox. The development host's stock Docker
-policy produced **No usable sandbox**; a sandbox-enabled deployment was not
-validated here. webcappi fails startup in this situation, rather than advertising
-readiness. Do not silently add privileged mode or grant SYS_ADMIN to make the
+policy produced **No usable sandbox**. The explicit
+[node-policy recipe](deploy/sandbox/README.md) prepares seccomp and, where
+required, AppArmor for the pinned browser. Without compatible policy, webcappi
+fails startup instead of advertising readiness. Do not silently add privileged mode or grant SYS_ADMIN to make the
 sample work. An administrator can evaluate the explicit `no_sandbox` option for
 a controlled workload; doing so removes Chromium's sandbox isolation. See
 [Chromium's AppArmor/user-namespace guidance](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
@@ -835,8 +836,9 @@ It supports authenticated memory or external Redis deployments, prepared profile
 bundles and a ClusterIP Service. Its README covers values, Secret preparation,
 updates and rollback. The browser sandbox is enabled by default; operators can
 explicitly disable it with `browser.noSandbox=true`. Sandbox-enabled operation
-requires compatible nodes; see the recorded
-[Helm verification limits](notes/DEVELOP.md#helm-chart-verification).
+requires compatible nodes and the chart's dedicated existing-profile
+references. See [node preparation and cleanup](deploy/sandbox/README.md) and
+[Phase 1a validation](notes/DEVELOP.md#phase-1a-sandbox-runtime).
 
 `deploy/kubernetes.yaml` supplies a single-replica Deployment, ClusterIP Service,
 ConfigMap, probes, resource limits, graceful termination, non-root execution,
@@ -923,4 +925,7 @@ font behavior are documented in the [browser notes](notes/BROWSER.md).
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+Project-authored code and deployment policies are licensed under the [MIT License](LICENSE).
+Bundled Chrome, system packages and other dependencies retain their respective
+licenses. See the [sandbox policy guide](deploy/sandbox/README.md) for policy
+design, host requirements and validation.

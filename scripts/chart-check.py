@@ -83,7 +83,14 @@ def main():
         configs = []
         manifests = []
 
-        def render(name, changes=None, release="check", success=True, error=None):
+        def render(
+            name,
+            changes=None,
+            release="check",
+            success=True,
+            error=None,
+            skip_schema=False,
+        ):
             values = temp / f"{name}.json"
             requested = merge(base, changes or {})
             values.write_text(json.dumps(requested))
@@ -98,6 +105,7 @@ def main():
                 "1.36.4",
                 "-f",
                 values,
+                *(["--skip-schema-validation"] if skip_schema else []),
                 success=success,
             )
             if not success:
@@ -133,11 +141,28 @@ def main():
                 fsGroup=10001,
                 seccompProfile={"type": "RuntimeDefault"},
             )
-            assert api["securityContext"] == dict(
+            browser = requested.get("browser", {})
+            expected_security = dict(
                 allowPrivilegeEscalation=False,
                 readOnlyRootFilesystem=True,
                 capabilities={"drop": ["ALL"]},
+                seccompProfile={"type": "RuntimeDefault"},
             )
+            for key in ("seccompProfile", "appArmorProfile"):
+                selected = browser.get(key, {})
+                if selected.get("type"):
+                    expected_security[key] = {"type": selected["type"]}
+                    if selected["type"] == "Localhost":
+                        expected_security[key]["localhostProfile"] = selected[
+                            "localhostProfile"
+                        ]
+            assert api["securityContext"] == expected_security
+            for init in spec.get("initContainers", []):
+                assert init["securityContext"] == dict(
+                    allowPrivilegeEscalation=False,
+                    readOnlyRootFilesystem=True,
+                    capabilities={"drop": ["ALL"]},
+                )
             assert (
                 service["spec"]["selector"]
                 == deployment["spec"]["selector"]["matchLabels"]
@@ -188,6 +213,55 @@ def main():
             "sandbox opt-out changed container isolation settings"
         )
         render("redis-sandbox-disabled", merge(REDIS, {"browser": {"noSandbox": True}}))
+        render(
+            "disabled-with-profiles",
+            merge(
+                BUNDLE,
+                {
+                    "browser": {
+                        "noSandbox": True,
+                        "seccompProfile": {
+                            "type": "Localhost",
+                            "localhostProfile": "webcappi/chrome.json",
+                        },
+                        "appArmorProfile": {
+                            "type": "Localhost",
+                            "localhostProfile": "webcappi-chrome",
+                        },
+                    }
+                },
+            ),
+        )
+        helper_rejections = 0
+        for key in ("seccompProfile", "appArmorProfile"):
+            for i, reference in enumerate(
+                (
+                    {"type": "Unconfined"},
+                    {"type": "Localhost", "localhostProfile": "../escape"},
+                    {"type": "RuntimeDefault", "localhostProfile": "extra"},
+                )
+            ):
+                render(
+                    f"helper-{key}-{i}",
+                    {"browser": {key: reference}},
+                    success=False,
+                    error=key,
+                    skip_schema=True,
+                )
+                helper_rejections += 1
+
+        for key in ("seccompProfile", "appArmorProfile"):
+            for kind in ("RuntimeDefault", "Localhost"):
+                reference = {
+                    "type": kind,
+                    "localhostProfile": "webcappi/chrome.json"
+                    if key == "seccompProfile"
+                    else "webcappi-chrome",
+                }
+                if kind == "RuntimeDefault":
+                    reference["localhostProfile"] = ""
+                render(f"{key}-{kind}", merge(BUNDLE, {"browser": {key: reference}}))
+
         for count in [1, 3]:
             dep, _, _ = render(f"redis-{count}", merge(REDIS, {"replicaCount": count}))
             assert dep["spec"]["strategy"] == {
@@ -469,6 +543,31 @@ def main():
                 ),
             ]
         )
+        for key in ("seccompProfile", "appArmorProfile"):
+            references = [
+                {"type": "Unconfined"},
+                {"type": "Localhost"},
+                {"type": "Localhost", "localhostProfile": ""},
+                {"type": "Localhost", "localhostProfile": "../escape"},
+                {"type": "Localhost", "localhostProfile": "/absolute"},
+                {"type": "Localhost", "localhostProfile": "x/../escape"},
+                {"type": "RuntimeDefault", "localhostProfile": "unexpected"},
+                {"type": "Localhost", "localhostProfile": "white space"},
+                {"type": "Localhost", "localhostProfile": "chrome", "raw": True},
+            ]
+            for i, reference in enumerate(references):
+                invalid.append((f"bad-{key}-{i}", {"browser": {key: reference}}, key))
+        invalid.append(
+            (
+                "legacy-apparmor",
+                {
+                    "podAnnotations": {
+                        "container.apparmor.security.beta.kubernetes.io/api": "unconfined"
+                    }
+                },
+                "invalid propertyName",
+            )
+        )
         many_profiles = {
             f"named-{i}": deepcopy(BUNDLE["profiles"]["descriptors"]["default"])
             for i in range(128)
@@ -549,7 +648,7 @@ def main():
         )
         assert actual == expected, "packaged files differ from chart source"
         print(
-            f"PASS: {len(configs)} valid configurations, {len(invalid)} rejected configurations, Kubernetes schemas, Go config loader and package contents"
+            f"PASS: {len(configs)} valid configurations, {len(invalid) + helper_rejections} rejected configurations, Kubernetes schemas, Go config loader and package contents"
         )
 
 

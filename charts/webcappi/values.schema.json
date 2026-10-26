@@ -84,11 +84,108 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "noSandbox"
+        "noSandbox",
+        "seccompProfile",
+        "appArmorProfile"
       ],
       "properties": {
         "noSandbox": {
           "type": "boolean"
+        },
+        "seccompProfile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "localhostProfile"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "RuntimeDefault",
+                "Localhost"
+              ]
+            },
+            "localhostProfile": {
+              "type": "string"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "Localhost"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "localhostProfile": {
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "localhostProfile": {
+                    "const": ""
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "appArmorProfile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "localhostProfile"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "",
+                "RuntimeDefault",
+                "Localhost"
+              ]
+            },
+            "localhostProfile": {
+              "type": "string"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "Localhost"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "localhostProfile": {
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "localhostProfile": {
+                    "const": ""
+                  }
+                }
+              }
+            }
+          ]
         }
       }
     },
@@ -532,7 +629,14 @@
       },
       "propertyNames": {
         "not": {
-          "const": "checksum/config"
+          "anyOf": [
+            {
+              "const": "checksum/config"
+            },
+            {
+              "pattern": "^(container[.]apparmor[.]security[.]beta[.]kubernetes[.]io/|(?:container[.])?seccomp[.]security[.]alpha[.]kubernetes[.]io/)"
+            }
+          ]
         }
       }
     },

@@ -1,4 +1,25 @@
 {{- define "webcappi.validate" -}}
+{{- range $name, $profile := dict "seccompProfile" .Values.browser.seccompProfile "appArmorProfile" .Values.browser.appArmorProfile -}}
+{{- $allowed := list "RuntimeDefault" "Localhost" -}}
+{{- if eq $name "appArmorProfile" -}}{{- $allowed = append $allowed "" -}}{{- end -}}
+{{- if not (has $profile.type $allowed) -}}
+{{- fail (printf "browser.%s.type must select a supported confined profile" $name) -}}
+{{- end -}}
+{{- if eq $profile.type "Localhost" -}}
+{{- $pattern := "^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$" -}}
+{{- if eq $name "appArmorProfile" -}}{{- $pattern = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" -}}{{- end -}}
+{{- if not (regexMatch $pattern $profile.localhostProfile) -}}
+{{- fail (printf "browser.%s requires a complete, clean Localhost reference" $name) -}}
+{{- end -}}
+{{- else if $profile.localhostProfile -}}
+{{- fail (printf "browser.%s.localhostProfile is only valid for Localhost" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- range $name, $_ := .Values.podAnnotations -}}
+{{- if regexMatch "^(container\\.apparmor\\.security\\.beta\\.kubernetes\\.io/|(?:container\\.)?seccomp\\.security\\.alpha\\.kubernetes\\.io/)" $name -}}
+{{- fail "podAnnotations must not override security profiles; use browser profile references" -}}
+{{- end -}}
+{{- end -}}
 {{- if and (gt (int .Values.replicaCount) 1) (ne .Values.cache.backend "redis") -}}
 {{- fail "replicaCount > 1 requires cache.backend=redis" -}}
 {{- end -}}

@@ -6,6 +6,7 @@ import hashlib
 import io
 from pathlib import Path
 import platform
+import subprocess
 import tarfile
 from urllib.request import urlopen
 
@@ -19,7 +20,12 @@ NODE_IMAGE = (
     "099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed"
 )
 SCHEMA_REVISION = "f7d855e49c34b039c9ef2196444910275e31e09e"
+APPARMOR_VERSION = "4.0.1really4.0.1-0ubuntu0.24.04.9"
 CHECKSUMS = {
+    "apparmor": {
+        "amd64": "59af23f557d666039708ec176aa056d2fd85125dabd452accf6d86f5c608fb74",
+        "arm64": "ed3c59de9e0c2e04976552cca187fc435c88892153df92e6c7bbb513cd470e5c",
+    },
     "kind": {
         "amd64": "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d",
         "arm64": "20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2",
@@ -107,6 +113,40 @@ def main():
         else:
             binary = data
         write(args.destination / name, binary, executable=True)
+    # Extract the parser only: no package installation, service or host policy changes.
+    archive_path = args.destination / "apparmor.download"
+    checksum = CHECKSUMS["apparmor"][arch]
+    if (
+        not archive_path.exists()
+        or hashlib.sha256(archive_path.read_bytes()).hexdigest() != checksum
+    ):
+        mirror = (
+            "archive.ubuntu.com/ubuntu"
+            if arch == "amd64"
+            else "ports.ubuntu.com/ubuntu-ports"
+        )
+        write(
+            archive_path,
+            fetch(
+                f"https://{mirror}/pool/main/a/apparmor/apparmor_{APPARMOR_VERSION}_{arch}.deb",
+                checksum,
+            ),
+        )
+    data = subprocess.run(
+        ["dpkg-deb", "--fsys-tarfile", str(archive_path)],
+        check=True,
+        capture_output=True,
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+        write(
+            args.destination / "apparmor_parser",
+            archive.extractfile("./sbin/apparmor_parser").read(),
+            executable=True,
+        )
+        write(
+            args.destination / "apparmor/abi/4.0",
+            archive.extractfile("./etc/apparmor.d/abi/4.0").read(),
+        )
     for name, checksum in SCHEMAS.items():
         target = args.destination / "schemas" / name
         if (
