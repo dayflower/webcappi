@@ -146,7 +146,7 @@ func TestConfigDecodeAndDefaults(t *testing.T) {
 			t.Fatalf("optional profiles/defaults: %+v, %v", c, err)
 		}
 	}
-	if c := Defaults(); c.Concurrency != 1 || c.NoSandbox || !strings.HasPrefix(c.BrowserPath, "/") {
+	if c := Defaults(); c.Concurrency != 1 || !c.Sandbox || !strings.HasPrefix(c.BrowserPath, "/") {
 		t.Fatal("unexpected defaults")
 	}
 }

@@ -870,7 +870,7 @@ def docker_browser_policy_tests(cluster, args):
             "--entrypoint",
             "/usr/local/bin/webcappi-capture-test",
             args.image,
-            "-test.run=^Test(ExtensionProfileLifecycle|RenderedFontFamilies|MultilingualRenderedFonts|LoopbackHTMLCharset|HTMLCapture|ProfileReadySelectors|TemporaryProfileLifecycle|NewProfileCleansUpFailedStartup)$",
+            "-test.run=^Test(ExtensionProfileLifecycle|CaptureFullPage|RenderedFontFamilies|MultilingualRenderedFonts|LoopbackHTMLCharset|HTMLCapture|ProfileReadySelectors|TemporaryProfileLifecycle|NewProfileCleansUpFailedStartup)$",
             "-test.v",
             "-test.timeout=180s",
         ]
@@ -1129,7 +1129,7 @@ def suite(cluster, args, root, aliases):
     values = {
         "image": image_values(args.image),
         "browser": {
-            "noSandbox": args.sandbox == "disabled",
+            "sandbox": args.sandbox == "enabled",
             **(cluster.policy.values if cluster.policy else {}),
         },
         "auth": {"existingSecret": "api-auth", "tokenKey": "access-token"},
@@ -1153,7 +1153,7 @@ def suite(cluster, args, root, aliases):
             cluster.kube("get", "configmap", "first-webcappi-config", "-o", "json")
         )["data"]["config.json"]
     )
-    assert effective["no_sandbox"] is (args.sandbox == "disabled"), (
+    assert effective["sandbox"] is (args.sandbox == "enabled"), (
         "installed config does not match requested sandbox mode"
     )
     first_pod = cluster.pods("first")[0]
@@ -1408,7 +1408,7 @@ def suite(cluster, args, root, aliases):
         )["data"]["config.json"]
     )
     assert config["cache"]["redis"]["generation"] == "capture-v2"
-    assert config["no_sandbox"] is (args.sandbox == "disabled")
+    assert config["sandbox"] is (args.sandbox == "enabled")
     with cluster.forward("service/first-webcappi", port=9090) as client:
         capture(client, path, args.artifacts, "rollback")
     cluster.uninstall("first")
@@ -1520,7 +1520,7 @@ def default_image_capture(cluster, args):
     values = {
         "auth": {"existingSecret": "api-auth", "tokenKey": "access-token"},
         "browser": {
-            "noSandbox": args.sandbox == "disabled",
+            "sandbox": args.sandbox == "enabled",
             **(cluster.policy.values if cluster.policy else {}),
         },
     }

@@ -89,13 +89,22 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "noSandbox",
         "seccompProfile",
         "appArmorProfile"
       ],
       "properties": {
-        "noSandbox": {
-          "type": "boolean"
+        "sandbox": {
+          "type": [
+            "boolean",
+            "null",
+            "string"
+          ],
+          "enum": [
+            true,
+            false,
+            null,
+            ""
+          ]
         },
         "seccompProfile": {
           "type": "object",

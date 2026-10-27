@@ -46,9 +46,12 @@ window.requestAnimationFrame = callback => raf(timestamp => {
 		HTML: html, Width: 100, Height: 100, DelayMS: 600,
 		Profile: Profile{UserDataDir: t.TempDir(), ProfileDirectory: "Default"},
 	}
-	for _, mode := range []string{HTMLModeFile, HTMLModeLoopback} {
-		t.Run(mode, func(t *testing.T) {
-			req.HTMLMode = mode
+	for _, tc := range []struct {
+		mode     string
+		fullPage bool
+	}{{HTMLModeFile, false}, {HTMLModeLoopback, false}, {HTMLModeFile, true}, {HTMLModeLoopback, true}} {
+		t.Run(fmt.Sprintf("%s/full=%t", tc.mode, tc.fullPage), func(t *testing.T) {
+			req.HTMLMode, req.FullPage = tc.mode, tc.fullPage
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			data, err := renderer.Capture(ctx, req)

@@ -7,9 +7,9 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# Chromium's sandbox is enabled by default. Set true only as an explicit opt-out.
+# Chromium's sandbox is enabled by default. Set false only as an explicit opt-out.
 browser:
-  noSandbox: false
+  sandbox: true
   # Existing node profiles, applied only to the API container.
   seccompProfile:
     type: RuntimeDefault

@@ -32,7 +32,8 @@ POST requires a non-empty HTML body and `Content-Type: text/html`.
 `max_post_bytes` sets the size limit in bytes (default: 1 MiB, or 1,048,576 bytes).
 JSON, form bodies and compressed bodies are not accepted. `url` is not accepted
 on POST. The query parameters `profile`,
-`width`, `height`, `output_width`, `output_height`, `ready_selector` and `delay_ms`
+`width`, `height`, `output_width`, `output_height`, `full_page`,
+`ready_selector` and `delay_ms`
 work as on GET.
 
 The POST-only query parameter `html_mode` selects how Chromium opens the HTML:
@@ -79,10 +80,13 @@ name to select a different profile. An explicitly empty or unknown profile name
 is rejected.
 `width` and `height` set the page's viewport in CSS pixels, defaulting to 1280 and
 720 in both REST and the capture CLI. They control responsive layout and the
-captured visible area, not the full scrollable page. Optional `output_width` and
+captured visible area by default. Use `full_page=true` to capture the full
+scrollable document while retaining this viewport for layout. Optional
+`output_width` and
 `output_height` set the PNG canvas dimensions in pixels; each omitted dimension
 defaults to the corresponding
-viewport dimension. The viewport image is resized proportionally to fill the
+captured dimension (the viewport normally, or the measured full page when
+`full_page=true`). The captured image is resized proportionally to fill the
 output canvas, then cropped around the center. Different aspect ratios remove
 equal portions from the left/right or top/bottom, without stretching or adding
 padding. Scaling can enlarge or shrink the image, using bilinear filtering after
@@ -95,7 +99,7 @@ This setting applies to GET, HTML POST and the local capture CLI. It requires a
 process restart; callers cannot override the algorithm per request. A restart
 clears memory metadata; Redis uses a separate scope for each resize algorithm.
 Browser device scale remains fixed at 1; resizing does not reflow the page or
-render at a higher device pixel ratio. With matching viewport/output sizes,
+render at a higher device pixel ratio. With matching captured/output sizes,
 the original screenshot is returned without re-encoding.
 
 For example, `&width=1200&height=800&output_width=600&output_height=600` lays out
@@ -108,6 +112,30 @@ are independently checked against the same `max_width`, `max_height` and
 oversized values are rejected with HTTP 400.
 Configuration limits must accommodate the default viewport: `max_width` must
 be at least 1280, `max_height` at least 720 and `max_pixels` at least 921600.
+
+The optional GET/POST parameter `full_page` accepts `true`, `false` or an empty
+value. Omission and empty values (including a bare `?full_page`) mean `false`.
+Other values, including `1` and `TRUE`, and repeated parameters return 400.
+The CLI equivalent is `-full-page` (or `-full-page=false`).
+
+Full-page mode measures the scrollable document after the existing readiness
+checks and optional delay, then captures that bounded area at device scale 1.
+It includes horizontal document overflow and does not resize the viewport to
+match the document. Omitted output dimensions are resolved independently from
+the measured source: for example, setting only `output_width` keeps the full
+source height as the output height and applies the same fill-and-center-crop
+rule. Set both output dimensions for a proportional downscaled full-page image.
+
+The complete source and resolved output are checked against `max_width`,
+`max_height` and `max_pixels` before screenshot generation, regardless of output
+scaling. A document or resolved output exceeding these runtime limits returns
+502 without a partial image. Explicit request dimensions outside the limits
+still return 400. The default maximum height is 4096 pixels; configure larger
+limits for longer documents. Content growing after measurement can fall outside
+the captured area. No automatic scrolling, lazy-loading activation, stitching,
+nested-scroll expansion or virtualized-list traversal is performed. Readiness
+still checks fonts and viewport-intersecting images; offscreen content may not
+have loaded. The same deadline, profiles and cleanup rules apply.
 
 Optional `ready_selector` (at most 1024 bytes) waits for
 an element in the page;
@@ -160,7 +188,7 @@ contract for those cases. No network-idle check or automatic fixed-duration dela
 is used. The optional delay does not guarantee application readiness. All waits
 share the overall deadline.
 
-Captures use a device scale factor of one and do not support full-page capture,
+Captures use a device scale factor of one and do not support
 PDF output, custom request headers or profile state write-back. There is no
 dedicated JavaScript execution endpoint; page scripts execute normally.
 
@@ -179,11 +207,15 @@ validators until eviction or the Redis retention deadline. Process restarts
 discard memory metadata; Redis metadata can be reused by another instance.
 Errors and responses marked `no-store` are not retained.
 
-The metadata key contains URL (including fragments), viewport, output dimensions,
+The metadata key contains URL (including fragments), viewport, full-page mode,
+output dimensions,
 the request's `ready_selector` and `delay_ms`, profile name, scale factor and
 renderer schema. Omitted output dimensions and explicit viewport-sized values
-share a key. Profile settings and bundle contents are fixed for the process.
-Redis also isolates rendering settings and deployment generations; see the
+share a key for viewport capture. Full-page mode keeps omitted output dimensions
+distinct from explicit dimensions, since the document size is determined later.
+Profile settings and bundle contents are fixed for the process.
+Redis also isolates rendering settings, capture dimension limits and deployment
+generations; see the
 [operations guide](OPERATIONS.md#redis-metadata-cache).
 
 Conditional GET supports weak tags, lists and `*`:

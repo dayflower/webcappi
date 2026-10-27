@@ -59,6 +59,9 @@ func TestCaptureCLIAndHTTPParity(t *testing.T) {
 		status int
 	}{
 		{"defaults", nil, 200},
+		{"full page", []string{"-full-page"}, 200},
+		{"full page false", []string{"-full-page=false"}, 200},
+		{"full page resize", []string{"-full-page", "-output-width", "400"}, 200},
 		{"viewport", []string{"-width", "1200", "-height", "800"}, 200},
 		{"output width", []string{"-output-width", "400"}, 200},
 		{"output height", []string{"-output-height", "400"}, 200},
@@ -90,7 +93,7 @@ func TestCaptureCLIAndHTTPParity(t *testing.T) {
 			err := captureToFile(t.Context(), c, cli, in, out)
 
 			// Encode the equivalent parsed flag values as an actual HTTP request.
-			q := url.Values{"url": {*in.URL}, "profile": {*in.ProfileName}, "ready_selector": {in.ReadySelector}}
+			q := url.Values{"url": {*in.URL}, "profile": {*in.ProfileName}, "ready_selector": {in.ReadySelector}, "full_page": {strconv.FormatBool(in.FullPage)}}
 			for key, value := range map[string]*int{"width": in.Width, "height": in.Height, "output_width": in.OutputWidth, "output_height": in.OutputHeight} {
 				if value != nil {
 					q.Set(key, strconv.Itoa(*value))

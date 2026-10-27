@@ -10,7 +10,7 @@ validation, and `notes/BROWSER.md` for browser details.
 - Support Linux amd64 and arm64 with the same pinned full Chrome for Testing
   version. Preserve extension support in unified headless; no runtime downloads.
 - Keep the browser sandbox enabled by default. Allow an explicit operator
-  opt-out through `no_sandbox` / Helm `browser.noSandbox`; never disable it
+  opt-out through `sandbox: false` / Helm `browser.sandbox=false`; never disable it
   automatically. Record sandbox-enabled and sandbox-disabled validation separately.
 - Clone the complete User Data Directory per capture; never modify the template.
   Keep extension code separate, preserve IDs/paths and reuse its installation.

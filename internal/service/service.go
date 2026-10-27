@@ -46,6 +46,9 @@ func New(parent context.Context, cfg config.Config, render RenderFunc) *Service 
 func Key(req capture.Request) string {
 	// Capture conditions identify metadata; no PNG bytes are retained.
 	outputWidth, outputHeight := req.OutputSize()
+	if req.FullPage {
+		outputWidth, outputHeight = req.OutputWidth, req.OutputHeight
+	}
 	b, _ := json.Marshal(struct {
 		Schema        string
 		URL           string
@@ -56,8 +59,9 @@ func Key(req capture.Request) string {
 		ProfileName   string
 		ReadySelector string
 		DelayMS       int
+		FullPage      bool
 	}{
-		Schema:        "viewport-png-v2-dsf1-cover-center",
+		Schema:        "page-png-v3-dsf1-cover-center",
 		URL:           req.URL,
 		Width:         req.Width,
 		Height:        req.Height,
@@ -66,6 +70,7 @@ func Key(req capture.Request) string {
 		ProfileName:   req.ProfileName,
 		ReadySelector: req.ReadySelector,
 		DelayMS:       req.DelayMS,
+		FullPage:      req.FullPage,
 	})
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])

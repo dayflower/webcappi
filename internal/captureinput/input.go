@@ -20,6 +20,7 @@ type Input struct {
 	ProfileName               *string
 	ReadySelector             string
 	DelayMS                   int
+	FullPage                  bool
 }
 
 type Options struct {
@@ -66,8 +67,13 @@ func Normalize(in Input, opts Options) (capture.Request, error) {
 	if exceedsLimits(req.Width, req.Height, opts) {
 		return req, errors.New("viewport exceeds configured limits")
 	}
-	req.OutputWidth, req.OutputHeight = req.OutputSize()
-	if exceedsLimits(req.OutputWidth, req.OutputHeight, opts) {
+	req.FullPage = in.FullPage
+	if !req.FullPage {
+		req.OutputWidth, req.OutputHeight = req.OutputSize()
+	}
+	// Full-page defaults are resolved after measuring the document. Validate each
+	// explicit dimension now, and the complete canvas again before capture.
+	if exceedsLimits(max(1, req.OutputWidth), max(1, req.OutputHeight), opts) {
 		return req, errors.New("output exceeds configured limits")
 	}
 	if in.DelayMS < 0 || in.DelayMS > 300_000 {

@@ -10,7 +10,7 @@ data:
         "bearer_token_file": "/run/secrets/webcappi/token"
       },
       "browser_path": "/opt/chrome/chrome",
-      "no_sandbox": false,
+      "sandbox": true,
       "work_dir": "/work/captures"
     }
 ---

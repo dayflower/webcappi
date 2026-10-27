@@ -53,8 +53,9 @@ func prepareRuntime(ctx context.Context, path string) (*runtimeResources, error)
 		return nil, err
 	}
 	renderer := capture.Renderer{
-		Browser: capture.Browser{Path: c.BrowserPath, NoSandbox: c.NoSandbox},
+		Browser: capture.Browser{Path: c.BrowserPath, NoSandbox: !c.Sandbox},
 		WorkDir: c.WorkDir, MaxProfileBytes: c.MaxProfileBytes, ResizeAlgorithm: c.ResizeAlgorithm,
+		MaxWidth: c.MaxWidth, MaxHeight: c.MaxHeight, MaxPixels: c.MaxPixels,
 	}
 	resources := &runtimeResources{config: c, renderer: renderer, auth: auth}
 	return initializeRuntime(ctx, resources, startupSteps{
