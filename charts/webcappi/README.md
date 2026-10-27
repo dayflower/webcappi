@@ -100,6 +100,42 @@ The default values deliberately require `auth.existingSecret`; bare
 `helm install`, `helm template` and `helm lint` fail until it is supplied or
 `auth.enabled=false` is set. Helm never reads the Secret contents via `lookup`.
 
+## Use as a subchart
+
+Add webcappi to the parent chart's `Chart.yaml`. For a published version, use
+the OCI repository (confirm that the version is available as described above):
+
+```yaml
+dependencies:
+  - name: webcappi
+    version: "0.1.2"
+    repository: oci://ghcr.io/dayflower/charts
+```
+
+For local development, use `repository: file://../webcappi` instead and adjust
+the path relative to the parent chart. Run `helm dependency build ./parent`
+after adding the dependency.
+
+Put webcappi settings under `webcappi:` in the parent's values file:
+
+```yaml
+global:
+  shared:
+    environment: production
+webcappi:
+  auth:
+    existingSecret: capture-auth
+  service:
+    port: 9090
+```
+
+The Secret must exist in the parent release's namespace. The same browser
+sandbox and node policy requirements apply as for a standalone installation.
+Helm forwards the parent's `global` object to subcharts. This chart accepts
+arbitrary keys inside that object, but does not use them to configure webcappi;
+set its configuration under `webcappi:`. Unknown webcappi settings remain
+rejected.
+
 ## Values and configuration
 
 See [values.yaml](values.yaml) for defaults and [values.schema.json](values.schema.json)

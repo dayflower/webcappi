@@ -21,6 +21,9 @@
     "httpRoute"
   ],
   "properties": {
+    "global": {
+      "type": "object"
+    },
     "replicaCount": {
       "type": "integer",
       "minimum": 1,

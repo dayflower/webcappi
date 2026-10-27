@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -91,15 +92,21 @@ def main():
             error=None,
             skip_schema=False,
             gateway=True,
+            parent=False,
         ):
             values = temp / f"{name}.json"
             requested = merge(base, changes or {})
-            values.write_text(json.dumps(requested))
+            scoped = deepcopy(requested)
+            if parent:
+                scoped = {"webcappi": scoped}
+                if "global" in requested:
+                    scoped["global"] = scoped["webcappi"].pop("global")
+            values.write_text(json.dumps(scoped))
             output = run(
                 args.helm,
                 "template",
                 release,
-                args.chart,
+                parent_chart if parent else args.chart,
                 "--namespace",
                 "check",
                 "--kube-version",
@@ -261,6 +268,79 @@ def main():
         defaults = temp / "lint.json"
         defaults.write_text(json.dumps(base))
         print(run(args.helm, "lint", "--strict", args.chart, "-f", defaults).strip())
+
+        parent_chart = temp / "parent"
+        shutil.copytree(args.chart, parent_chart / "charts/webcappi")
+        (parent_chart / "templates").mkdir()
+        (parent_chart / "values.yaml").write_text("{}\n")
+        metadata = yaml.safe_load((args.chart / "Chart.yaml").read_text())
+        (parent_chart / "Chart.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "apiVersion": "v2",
+                    "name": "chart-check-parent",
+                    "version": "0.1.0",
+                    "dependencies": [
+                        {
+                            "name": "webcappi",
+                            "version": metadata["version"],
+                            "repository": "file://charts/webcappi",
+                        }
+                    ],
+                }
+            )
+        )
+        overrides = {"service": {"port": 9090}, "capture": {"timeoutSeconds": 45}}
+        _, service, config = render("subchart-reference", overrides)
+        assert service["spec"]["ports"][0]["port"] == 9090
+        assert config["capture_timeout_seconds"] == 45
+        reference = list(
+            yaml.safe_load_all((temp / "subchart-reference.yaml").read_text())
+        )
+        for name, globals_ in (
+            ("absent", {}),
+            ("empty", {"global": {}}),
+            (
+                "nested",
+                {
+                    "global": {
+                        "imageRegistry": "registry.example.com",
+                        "service": {"port": 1234},
+                        "shared": {"enabled": True, "labels": ["parent", "sibling"]},
+                    }
+                },
+            ),
+        ):
+            name = "subchart-" + name
+            render(name, merge(overrides, globals_), parent=True)
+            assert list(yaml.safe_load_all((temp / f"{name}.yaml").read_text())) == (
+                reference
+            ), "parent values changed the standalone resources"
+        print(
+            run(
+                args.helm,
+                "lint",
+                "--strict",
+                parent_chart,
+                "-f",
+                temp / "subchart-nested.json",
+            ).strip()
+        )
+        subchart_rejections = 0
+        for name, changes, error in (
+            ("unknown", {"unknownSetting": True}, "unknownSetting"),
+            ("port", {"service": {"port": "invalid"}}, "port"),
+            ("auth", {"auth": {"existingSecret": ""}}, "existingSecret"),
+        ):
+            render(
+                "subchart-invalid-" + name,
+                changes,
+                parent=True,
+                success=False,
+                error=error,
+            )
+            subchart_rejections += 1
+
         memory, _, _ = render("memory")
         assert memory["spec"]["strategy"] == {"type": "Recreate"}
         explicit, _, _ = render("sandbox-enabled", {"browser": {"noSandbox": False}})
@@ -683,6 +763,8 @@ def main():
             )
             helper_rejections += 1
         invalid = [
+            ("global-string", {"global": "invalid"}, "global"),
+            ("global-array", {"global": []}, "global"),
             ("memory-replicas", {"replicaCount": 2}, "requires cache.backend=redis"),
             ("replica-zero", {"replicaCount": 0}, "replicaCount"),
             ("replica-string", {"replicaCount": "2"}, "replicaCount"),
@@ -1012,7 +1094,7 @@ def main():
         )
         assert actual == expected, "packaged files differ from chart source"
         print(
-            f"PASS: {len(configs)} valid configurations, {len(invalid) + helper_rejections} rejected configurations, Kubernetes schemas, Go config loader and package contents"
+            f"PASS: {len(configs)} valid configurations, {len(invalid) + helper_rejections + subchart_rejections} rejected configurations, Kubernetes schemas, Go config loader and package contents"
         )
 
 
