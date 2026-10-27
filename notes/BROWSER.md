@@ -1,9 +1,9 @@
 # Browser implementation and qualification
 
 This document records browser choices and observed behavior for maintainers.
-See the [README](../README.md) for preparing profiles, capturing pages and
-operating the service, and the [development guide](DEVELOP.md) for build and
-regression commands.
+See the [README](../README.md) for capture examples, the [profile guide](PROFILES.md)
+for preparing browser data, the [operations guide](OPERATIONS.md) for deployment,
+and the [development guide](DEVELOP.md) for build and regression commands.
 
 ## Browser selection
 
