@@ -40,7 +40,7 @@ retention. Configuration changes require a process restart.
 | `metadata_max_entries` | 128 | Validation metadata LRU entry limit (0–10000) |
 | `max_width`, `max_height` | 4096 each | Maximum viewport and output dimensions, checked independently |
 | `max_pixels` | 8388608 | Maximum area of each viewport and output canvas |
-| `resize_algorithm` | `bilinear` | Resize filter: `bilinear`, `catmull_rom`, `approx_bilinear` or `nearest_neighbor`; center cropping is preserved |
+| `resize_algorithm` | `bilinear` | Resize filter: `bilinear`, `catmull_rom`, `approx_bilinear` or `nearest_neighbor`; one output dimension resizes the complete image, both select center cropping |
 | `max_profile_bytes` | 536870912 | Maximum template bytes copied during initialization or per capture |
 | `max_post_bytes` | 1048576 | Maximum HTML POST body bytes (1–134217728) |
 | `max_png_bytes` | 41943040 | Maximum generated PNG size |

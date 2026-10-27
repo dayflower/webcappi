@@ -170,6 +170,41 @@ def smoke_resize_cli(client, api, artifacts):
     assert struct.unpack(">II", other_size[2][16:24]) == (600, 400)
     assert other_size[1]["ETag"] != resized_headers["ETag"]
     assert get(capture(output_width=4096, output_height=4096))[0] == 400
+    for dimension, value, expected in (
+        ("output_width", 400, (400, 267)),
+        ("output_height", 400, (600, 400)),
+    ):
+        status, _, image = get(capture(width=1200, height=800, **{dimension: value}))
+        assert status == 200, (status, image[:1024])
+        assert struct.unpack(">II", image[16:24]) == expected
+        status, _, image = get(
+            f"/capture?width=1200&height=800&{dimension}={value}",
+            data=b"<p>single-dimension HTML</p>",
+            content_type="text/html",
+        )
+        assert status == 200, (status, image[:1024])
+        assert struct.unpack(">II", image[16:24]) == expected
+        docker(
+            "exec",
+            api,
+            "webcappi",
+            "capture",
+            "-config",
+            "/etc/webcappi/config.json",
+            "-url",
+            "http://fixture:8000/scenarios/resize/",
+            "-width",
+            "1200",
+            "-height",
+            "800",
+            "-" + dimension.replace("_", "-"),
+            str(value),
+            "-out",
+            "/tmp/cli-single-dimension.png",
+        )
+        image = docker("exec", api, "cat", "/tmp/cli-single-dimension.png", binary=True)
+        assert struct.unpack(">II", image[16:24]) == expected
+    assert get(capture(output_width=4000))[0] == 400
     (artifacts / "api-resized.png").write_bytes(resized_png)
 
     resized_html = get(
@@ -332,6 +367,10 @@ def smoke_full_page(client, api, artifacts):
         path + "&full_page=true&output_width=160&output_height=600"
     )
     assert status == 200 and struct.unpack(">II", resized[16:24]) == (160, 600)
+    for query in ("output_width=160", "output_height=600"):
+        status, _, image = client.get(path + "&full_page=true&" + query)
+        assert status == 200 and struct.unpack(">II", image[16:24]) == (160, 600)
+    assert client.get(path + "&full_page=true&output_width=1200")[0] == 502
     for mode in ("file", "loopback"):
         status, _, image = client.get(
             "/capture?width=320&height=200&full_page=true&html_mode=" + mode,
@@ -339,6 +378,14 @@ def smoke_full_page(client, api, artifacts):
             content_type="text/html",
         )
         assert status == 200 and struct.unpack(">II", image[16:24]) == (320, 1200)
+        for query in ("output_width=160", "output_height=600"):
+            status, _, image = client.get(
+                f"/capture?width=320&height=200&full_page=true&html_mode={mode}&{query}",
+                data=b"<!doctype html><style>html,body{margin:0;width:400px;height:1200px}</style>",
+                content_type="text/html",
+            )
+            expected = (160, 480) if query.startswith("output_width") else (200, 600)
+            assert status == 200 and struct.unpack(">II", image[16:24]) == expected
     assert client.get(path + "&full_page=yes")[0] == 400
     status, _, _ = client.get(
         "/capture?full_page=true&output_height=100",
@@ -365,6 +412,28 @@ def smoke_full_page(client, api, artifacts):
     )
     cli = docker("exec", api, "cat", "/work/full-page.png", binary=True)
     assert struct.unpack(">II", cli[16:24]) == (320, 1200)
+    for flag, value in (("-output-width", "160"), ("-output-height", "600")):
+        docker(
+            "exec",
+            api,
+            "webcappi",
+            "capture",
+            "-config",
+            "/etc/webcappi/config.json",
+            "-url",
+            "http://fixture:8000/full-page.html",
+            "-width",
+            "320",
+            "-height",
+            "200",
+            "-full-page",
+            flag,
+            value,
+            "-out",
+            "/work/full-page-single.png",
+        )
+        cli = docker("exec", api, "cat", "/work/full-page-single.png", binary=True)
+        assert struct.unpack(">II", cli[16:24]) == (160, 600)
     (artifacts / "api-full-page.png").write_bytes(full)
 
 

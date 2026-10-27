@@ -25,7 +25,7 @@ func TestResizeAlgorithmSelection(t *testing.T) {
 	if err := png.Encode(&data, src); err != nil {
 		t.Fatal(err)
 	}
-	linear, err := resizePNG(t.Context(), data.Bytes(), 8, 4, ResizeBilinear)
+	linear, err := resizePNG(t.Context(), data.Bytes(), 8, 4, ResizeBilinear, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestResizeAlgorithmSelection(t *testing.T) {
 	if got := color.RGBAModel.Convert(img.At(1, 1)); got != (color.RGBA{64, 64, 64, 255}) {
 		t.Fatalf("bilinear interpolation: got %v", got)
 	}
-	cubic, err := resizePNG(t.Context(), data.Bytes(), 8, 4, ResizeCatmullRom)
+	cubic, err := resizePNG(t.Context(), data.Bytes(), 8, 4, ResizeCatmullRom, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestResizeAlgorithmSelection(t *testing.T) {
 		{ResizeApproxBilinear, 1, 1, 0, 0, 128},
 		{ResizeBilinear, 1, 1, 0, 0, 96},
 	} {
-		out, err := resizePNG(t.Context(), data.Bytes(), tc.width, tc.height, tc.algorithm)
+		out, err := resizePNG(t.Context(), data.Bytes(), tc.width, tc.height, tc.algorithm, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -71,7 +71,7 @@ func TestResizeAlgorithmSelection(t *testing.T) {
 			t.Fatalf("%s at %dx%d: got %v, want %v", tc.algorithm, tc.width, tc.height, got, want)
 		}
 	}
-	if _, err := resizePNG(t.Context(), data.Bytes(), 8, 4, "unknown"); err == nil {
+	if _, err := resizePNG(t.Context(), data.Bytes(), 8, 4, "unknown", true); err == nil {
 		t.Fatal("unknown algorithm accepted")
 	}
 }
@@ -113,7 +113,7 @@ func testResizePNG(t *testing.T, algorithm ResizeAlgorithm) {
 		{"extremely tall output", 1, 8192, green, red},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := resizePNG(t.Context(), data.Bytes(), tc.width, tc.height, algorithm)
+			out, err := resizePNG(t.Context(), data.Bytes(), tc.width, tc.height, algorithm, true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -149,10 +149,10 @@ func testResizePNG(t *testing.T, algorithm ResizeAlgorithm) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := resizePNG(ctx, data.Bytes(), 8, 8, algorithm); !errors.Is(err, context.Canceled) {
+	if _, err := resizePNG(ctx, data.Bytes(), 8, 8, algorithm, true); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation ignored: %v", err)
 	}
-	if _, err := resizePNG(t.Context(), []byte("invalid PNG"), 8, 8, algorithm); err == nil {
+	if _, err := resizePNG(t.Context(), []byte("invalid PNG"), 8, 8, algorithm, true); err == nil {
 		t.Fatal("invalid PNG accepted")
 	}
 }
@@ -160,6 +160,52 @@ func testResizePNG(t *testing.T, algorithm ResizeAlgorithm) {
 func TestResizePNGExtremeSourceAspectRatios(t *testing.T) {
 	for _, algorithm := range []ResizeAlgorithm{ResizeBilinear, ResizeCatmullRom, ResizeApproxBilinear, ResizeNearestNeighbor} {
 		t.Run(string(algorithm), func(t *testing.T) { testResizePNGExtremeSourceAspectRatios(t, algorithm) })
+	}
+}
+
+func TestResizePNGCompleteImage(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 12, 1))
+	red, green, blue := color.RGBA{255, 0, 0, 255}, color.RGBA{0, 180, 0, 255}, color.RGBA{0, 0, 255, 255}
+	for y := range 1 {
+		for x := range 12 {
+			c := green
+			if x < 4 {
+				c = red
+			} else if x >= 8 {
+				c = blue
+			}
+			src.Set(x, y, c)
+		}
+	}
+	var data bytes.Buffer
+	if err := png.Encode(&data, src); err != nil {
+		t.Fatal(err)
+	}
+	for _, algorithm := range []ResizeAlgorithm{ResizeBilinear, ResizeCatmullRom, ResizeApproxBilinear, ResizeNearestNeighbor} {
+		t.Run(string(algorithm), func(t *testing.T) {
+			// Width 4 derives a height of 1/3, clamped to one pixel. Complete-image
+			// resizing must retain the edges that center cropping would remove.
+			out, err := resizePNG(t.Context(), data.Bytes(), 4, 1, algorithm, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			img, err := png.Decode(bytes.NewReader(out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if img.Bounds() != image.Rect(0, 0, 4, 1) {
+				t.Fatal("unexpected complete-image output size", img.Bounds())
+			}
+			for _, pixel := range []struct {
+				x    int
+				want color.RGBA
+			}{{0, red}, {3, blue}} {
+				got := color.RGBAModel.Convert(img.At(pixel.x, 0)).(color.RGBA)
+				if max(got.R, pixel.want.R)-min(got.R, pixel.want.R) > 33 || max(got.G, pixel.want.G)-min(got.G, pixel.want.G) > 33 || max(got.B, pixel.want.B)-min(got.B, pixel.want.B) > 33 || got.A != 255 {
+					t.Fatalf("complete-image resize cropped an edge: %v, want %v", got, pixel.want)
+				}
+			}
+		})
 	}
 }
 
@@ -177,7 +223,7 @@ func testResizePNGExtremeSourceAspectRatios(t *testing.T, algorithm ResizeAlgori
 			t.Fatal(err)
 		}
 		// A full scaled intermediate would have over 67 million pixels.
-		out, err := resizePNG(t.Context(), data.Bytes(), size.Y, size.X, algorithm)
+		out, err := resizePNG(t.Context(), data.Bytes(), size.Y, size.X, algorithm, true)
 		if err != nil {
 			t.Fatal(err)
 		}

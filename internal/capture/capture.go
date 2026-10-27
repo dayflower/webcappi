@@ -45,19 +45,6 @@ type Request struct {
 	Revalidate      *SourceResponse
 }
 
-// OutputSize resolves viewport-mode output dimensions. Full-page defaults
-// require the document dimensions measured during capture.
-func (r Request) OutputSize() (int, int) {
-	w, h := r.OutputWidth, r.OutputHeight
-	if w == 0 {
-		w = r.Width
-	}
-	if h == 0 {
-		h = r.Height
-	}
-	return w, h
-}
-
 type Renderer struct {
 	Browser         Browser
 	WorkDir         string
@@ -233,11 +220,17 @@ func (r Renderer) CaptureWithMetadata(ctx context.Context, req Request) (result 
 		result.PNG, err = r.captureFullPage(tab, req)
 		return result, err
 	}
+	w, h, err := req.OutputSize(req.Width, req.Height)
+	if err != nil {
+		return result, err
+	}
+	if err := r.checkPageSize(w, h); err != nil {
+		return result, fmt.Errorf("output: %w", err)
+	}
 	png, err := chromedp.Run(tab, chromedp.CaptureScreenshot())
 	if err != nil {
 		return result, err
 	}
-	w, h := req.OutputSize()
 	if w == req.Width && h == req.Height {
 		result.PNG = png
 		return result, nil
@@ -246,7 +239,7 @@ func (r Renderer) CaptureWithMetadata(ctx context.Context, req Request) (result 
 	if algorithm == "" {
 		algorithm = ResizeBilinear
 	}
-	result.PNG, err = resizePNG(ctx, png, w, h, algorithm)
+	result.PNG, err = resizePNG(ctx, png, w, h, algorithm, req.OutputWidth != 0 && req.OutputHeight != 0)
 	return result, err
 }
 

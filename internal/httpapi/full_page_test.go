@@ -10,7 +10,15 @@ import (
 
 func TestFullPageQuery(t *testing.T) {
 	api, _ := setup(t, func(_ context.Context, req capture.Request) ([]byte, error) {
-		return fmt.Appendf(nil, "%t/%dx%d", req.FullPage, req.OutputWidth, req.OutputHeight), nil
+		w, h := req.OutputWidth, req.OutputHeight
+		if !req.FullPage {
+			var err error
+			w, h, err = req.OutputSize(req.Width, req.Height)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return fmt.Appendf(nil, "%t/%dx%d", req.FullPage, w, h), nil
 	})
 	for _, tc := range []struct{ query, want string }{
 		{"", "false/1280x720"},

@@ -20,7 +20,9 @@ func TestCaptureFullPage(t *testing.T) {
 html,body{margin:0;background:red}body{width:400px;height:1200px}
 @media (width:320px) and (height:200px){body{background:rgb(20,180,60)}}
 #end{position:absolute;left:0;top:1160px;width:400px;height:40px;background:blue}
-</style><div id=end></div>`
+#left,#right{position:absolute;top:400px;width:20px;height:40px}
+#left{left:0;background:red}#right{left:380px;background:yellow}
+</style><div id=end></div><div id=left></div><div id=right></div>`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(html))
@@ -41,8 +43,13 @@ html,body{margin:0;background:red}body{width:400px;height:1200px}
 		{name: "file", mode: HTMLModeFile, want: image.Rect(0, 0, 400, 1200)},
 		{name: "loopback", mode: HTMLModeLoopback, want: image.Rect(0, 0, 400, 1200)},
 		{name: "resize", mode: HTMLModeFile, width: 200, height: 600, want: image.Rect(0, 0, 200, 600)},
-		{name: "output width", mode: HTMLModeFile, width: 200, want: image.Rect(0, 0, 200, 1200)},
-		{name: "output height", mode: HTMLModeFile, height: 600, want: image.Rect(0, 0, 400, 600)},
+		{name: "output width", mode: HTMLModeFile, width: 200, want: image.Rect(0, 0, 200, 600)},
+		{name: "output height", mode: HTMLModeFile, height: 600, want: image.Rect(0, 0, 200, 600)},
+		{name: "rounded height", mode: HTMLModeFile, height: 601, want: image.Rect(0, 0, 200, 601)},
+		{name: "enlarge width", mode: HTMLModeFile, width: 800, want: image.Rect(0, 0, 800, 2400)},
+		{name: "enlarge height", mode: HTMLModeFile, height: 2400, want: image.Rect(0, 0, 800, 2400)},
+		{name: "derived height limit", width: 1400, err: true},
+		{name: "derived width limit", height: 1800, maxWidth: 500, err: true},
 		{name: "source height limit", height: 100, maxHeight: 1000, err: true},
 		{name: "source width limit", width: 100, maxWidth: 350, err: true},
 		{name: "source pixel limit", width: 100, height: 100, maxPixels: 400_000, err: true},
@@ -73,13 +80,24 @@ html,body{margin:0;background:red}body{width:400px;height:1200px}
 			if err != nil || img.Bounds() != tc.want {
 				t.Fatalf("PNG dimensions: %v, %v", img, err)
 			}
-			// These aspect ratios retain both ends; other cases exercise cropping.
-			if tc.width == 0 && tc.height == 0 || tc.name == "resize" || tc.name == "output width" {
+			// Complete-image resizing retains both document ends and the original layout.
+			if tc.width == 0 || tc.height == 0 || tc.name == "resize" {
 				if got := color.RGBAModel.Convert(img.At(10, 10)); got != (color.RGBA{20, 180, 60, 255}) {
 					t.Fatalf("viewport layout changed: %v", got)
 				}
 				if got := color.RGBAModel.Convert(img.At(10, tc.want.Dy()-5)); got != (color.RGBA{0, 0, 255, 255}) {
 					t.Fatalf("document bottom missing: %v", got)
+				}
+				for _, pixel := range []struct {
+					x    int
+					want color.RGBA
+				}{
+					{5, color.RGBA{255, 0, 0, 255}},
+					{tc.want.Dx() - 5, color.RGBA{255, 255, 0, 255}},
+				} {
+					if got := color.RGBAModel.Convert(img.At(pixel.x, tc.want.Dy()*420/1200)); got != pixel.want {
+						t.Fatalf("horizontal overflow was cropped: %v, want %v", got, pixel.want)
+					}
 				}
 			}
 		})

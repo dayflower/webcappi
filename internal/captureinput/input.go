@@ -68,13 +68,17 @@ func Normalize(in Input, opts Options) (capture.Request, error) {
 		return req, errors.New("viewport exceeds configured limits")
 	}
 	req.FullPage = in.FullPage
-	if !req.FullPage {
-		req.OutputWidth, req.OutputHeight = req.OutputSize()
-	}
-	// Full-page defaults are resolved after measuring the document. Validate each
-	// explicit dimension now, and the complete canvas again before capture.
+	// Validate explicit dimensions before doing any proportional arithmetic.
 	if exceedsLimits(max(1, req.OutputWidth), max(1, req.OutputHeight), opts) {
 		return req, errors.New("output exceeds configured limits")
+	}
+	// Full-page output is resolved and checked after measuring the document.
+	// Preserve omissions in the request to select resizing without cropping.
+	if !req.FullPage {
+		w, h, err := req.OutputSize(req.Width, req.Height)
+		if err != nil || exceedsLimits(w, h, opts) {
+			return req, errors.New("output exceeds configured limits")
+		}
 	}
 	if in.DelayMS < 0 || in.DelayMS > 300_000 {
 		return req, errors.New("delay_ms must be an integer between 0 and 300000")

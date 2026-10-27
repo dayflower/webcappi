@@ -84,7 +84,7 @@
         <tbody>
           <tr><td><code>url</code></td><td>GET only</td><td>Required absolute HTTP(S) URL without embedded credentials. Maximum 8192 bytes.</td></tr>
           <tr><td><code>width</code>, <code>height</code></td><td>GET / POST</td><td>Viewport in CSS pixels; defaults to 1280 × 720. Determines layout; captures the visible area unless <code>full_page=true</code>.</td></tr>
-          <tr><td><code>output_width</code>, <code>output_height</code></td><td>GET / POST</td><td>PNG dimensions in pixels. Each omitted dimension uses the corresponding captured dimension (viewport or full page).</td></tr>
+          <tr><td><code>output_width</code>, <code>output_height</code></td><td>GET / POST</td><td>PNG dimensions in pixels. Omit both to keep the captured size. Specify one to resize the complete image using its captured aspect ratio (viewport or full page); the other dimension is rounded to the nearest integer, with halves rounded up and a minimum of 1 pixel. Specify both to resize and center crop.</td></tr>
           <tr><td><code>full_page</code></td><td>GET / POST</td><td>Capture the full scrollable document with <code>true</code>. Omitted, empty or <code>false</code> captures the viewport. Other or repeated values are rejected.</td></tr>
           <tr><td><code>profile</code></td><td>GET / POST</td><td>Profile name; defaults to <code>default</code>. Ask your administrator for other configured names. Empty or unknown names are rejected.</td></tr>
           <tr><td><code>ready_selector</code></td><td>GET / POST</td><td>CSS selector for an element to wait for before capture. The element may be hidden. Omit to skip this additional check; maximum 1024 bytes.</td></tr>

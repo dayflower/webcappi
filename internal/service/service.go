@@ -45,9 +45,11 @@ func New(parent context.Context, cfg config.Config, render RenderFunc) *Service 
 
 func Key(req capture.Request) string {
 	// Capture conditions identify metadata; no PNG bytes are retained.
-	outputWidth, outputHeight := req.OutputSize()
-	if req.FullPage {
-		outputWidth, outputHeight = req.OutputWidth, req.OutputHeight
+	outputWidth, outputHeight := req.OutputWidth, req.OutputHeight
+	// Preserve single-dimension requests: rounding may make their complete-image
+	// resize differ from an explicit canvas with the same resolved dimensions.
+	if !req.FullPage && outputWidth == 0 && outputHeight == 0 {
+		outputWidth, outputHeight = req.Width, req.Height
 	}
 	b, _ := json.Marshal(struct {
 		Schema        string
