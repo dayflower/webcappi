@@ -276,7 +276,7 @@ With empty descriptors and no bundle, the application generates its default
 profile in Pod scratch space. No artifact image or PVC is required. Scratch
 and automatic profiles disappear when the Pod is removed.
 
-For prepared profiles, follow the application's [profile staging procedure](../../README.md)
+For prepared profiles, follow the application's [profile staging procedure](../../notes/PROFILES.md)
 and [bundle image example](../../deploy/bundle.Dockerfile). Package the complete
 User Data Directory, bundle descriptors and separate unpacked extensions under
 `/bundle/`, with UID/GID 10001 and permissions readable by that identity. The

@@ -1,7 +1,9 @@
 # AGENTS.md
 
-See `README.md` for configuration and operating procedures, `notes/DEVELOP.md`
-for architecture and validation, and `notes/BROWSER.md` for browser details.
+See `README.md` for setup and capture examples, `notes/API.md` for the HTTP API,
+`notes/OPERATIONS.md` for configuration and operating procedures,
+`notes/PROFILES.md` for browser profiles, `notes/DEVELOP.md` for architecture and
+validation, and `notes/BROWSER.md` for browser details.
 
 ## Constraints
 

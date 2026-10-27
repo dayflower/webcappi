@@ -1,6 +1,7 @@
 # Development guide
 
-The [README](../README.md) covers setup, capture requests and operations.
+The [README](../README.md) covers setup and capture requests. Detailed references
+cover the [API](API.md), [operations](OPERATIONS.md) and [profiles](PROFILES.md).
 This guide describes implementation boundaries, regression checks and the scope
 of recorded validation. Browser choices, extension experiments and font
 measurements are in [BROWSER.md](BROWSER.md).
@@ -11,17 +12,38 @@ Use the Go toolchain pinned in [Dockerfile](../Dockerfile): **Go 1.26.10**.
 The module minimum is Go 1.26.0 (required by go-redis v9.23.0). The browser is
 full Chrome for Testing
 **156.0.8078.47** on both Linux amd64 and arm64; chromedp is **v0.21.0**.
-Docker with Buildx is needed for image/browser checks, and Python 3 for smoke
+Docker with Buildx is needed for image builds/browser checks, and Python 3 for smoke
 tests. Host Go compilation is needed by the browser-test script even when the
 application runs entirely in containers.
+
+Build and load the application image for the host architecture:
+
+```sh
+make image
+```
+
+The local tag is `webcappi:dev`. Use it in place of the published image in the
+[quick start](../README.md#quick-start) to run your changes. To select a platform:
+
+```sh
+make image PLATFORM=linux/amd64 IMAGE=webcappi:dev-amd64
+make image PLATFORM=linux/arm64 IMAGE=webcappi:dev-arm64
+```
+
+The platform selects both the application and browser architecture. Running a
+foreign-architecture image requires runtime emulation; native runners are
+preferred. Multi-platform builds and CLI exports are covered under
+[build artifacts](#build-artifacts-and-platforms).
+
+To build only the native executable:
 
 ```sh
 GOTOOLCHAIN=go1.26.10 make build
 ```
 
 This writes `bin/webcappi`. Native captures still require the pinned browser,
-shared libraries, fonts and a suitable sandbox policy; see the README for
-runtime configuration.
+shared libraries, fonts and a suitable sandbox policy; see the
+[operations guide](OPERATIONS.md#container-requirements) for runtime requirements.
 
 For native Linux execution, use the same Chrome for Testing binary, dependencies
 and fonts as the image, edit absolute paths in the configuration and descriptor,
@@ -52,6 +74,36 @@ and uses Git metadata when available. A direct `go build` defaults to `dev` and
 uses Go's VCS metadata when available; the supported release build paths pass
 identity explicitly and disable automatic VCS stamping so exported and image
 binaries agree.
+
+### Profile artifact images
+
+After [preparing a bundle](PROFILES.md), package it independently of the API image:
+
+```sh
+docker build -f deploy/bundle.Dockerfile -t webcappi-profiles:default-20261023-1 bundles
+```
+
+The Dockerfile copies the bundle with ownership 10001:10001 so an initContainer
+can read private files. Use the [chart's profile settings](../charts/webcappi/README.md#profiles)
+to copy `/bundle/default` into a Pod-local `emptyDir`, then mount it read-only at
+`/bundles` in the API container. Keep the configured descriptor in sync with
+`bundle.json` and qualify each bundle with the target architecture and API image.
+
+### Local Redis fixture
+
+The repository's Compose example builds the local application image and starts
+an internal Redis with no published Redis port or persistence:
+
+```sh
+docker compose -f deploy/compose.redis.yaml up --build
+```
+
+It binds the API to loopback, uses unauthenticated/unencrypted Redis and preserves
+the browser sandbox. Stop and remove both containers with:
+
+```sh
+docker compose -f deploy/compose.redis.yaml down
+```
 
 ### Formatting and static analysis
 
@@ -283,7 +335,8 @@ conservatively for network delay.
 Fresh matching metadata may return 304 without a browser and without renewing
 its validation time. Expired metadata needs source validation or recapture
 before deciding 304. Unconditional GET and all HTML POST requests remain
-independent captures. See the README for client-visible freshness semantics and
+independent captures. See the [API reference](API.md#conditional-get-and-freshness)
+for client-visible freshness semantics and
 the limits of treating main-document validators as evidence about a screenshot.
 
 ## Redis integration checks
@@ -596,7 +649,8 @@ Recheck persisted installation, IDs/paths/storage, welcome-tab independence,
 readiness, CDP font selection, immutable templates, HTML modes, resizing and
 cleanup. Fontconfig matches alone do not establish browser selection. Consult
 the [browser notes](BROWSER.md) for measured behavior and source references;
-the README describes staging and deploying profile updates.
+the [profile guide](PROFILES.md#validate-and-update-bundles) describes staging and
+deploying profile updates.
 
 ## Recorded validation scope
 
