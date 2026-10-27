@@ -83,8 +83,9 @@
         <thead><tr><th scope="col">Parameter</th><th scope="col">Applies to</th><th scope="col">Meaning and default</th></tr></thead>
         <tbody>
           <tr><td><code>url</code></td><td>GET only</td><td>Required absolute HTTP(S) URL without embedded credentials. Maximum 8192 bytes.</td></tr>
-          <tr><td><code>width</code>, <code>height</code></td><td>GET / POST</td><td>Viewport in CSS pixels; defaults to 1280 × 720. Captures the visible area, not the full scrollable page.</td></tr>
-          <tr><td><code>output_width</code>, <code>output_height</code></td><td>GET / POST</td><td>PNG dimensions in pixels. Each omitted dimension uses the corresponding viewport dimension.</td></tr>
+          <tr><td><code>width</code>, <code>height</code></td><td>GET / POST</td><td>Viewport in CSS pixels; defaults to 1280 × 720. Determines layout; captures the visible area unless <code>full_page=true</code>.</td></tr>
+          <tr><td><code>output_width</code>, <code>output_height</code></td><td>GET / POST</td><td>PNG dimensions in pixels. Each omitted dimension uses the corresponding captured dimension (viewport or full page).</td></tr>
+          <tr><td><code>full_page</code></td><td>GET / POST</td><td>Capture the full scrollable document with <code>true</code>. Omitted, empty or <code>false</code> captures the viewport. Other or repeated values are rejected.</td></tr>
           <tr><td><code>profile</code></td><td>GET / POST</td><td>Profile name; defaults to <code>default</code>. Ask your administrator for other configured names. Empty or unknown names are rejected.</td></tr>
           <tr><td><code>ready_selector</code></td><td>GET / POST</td><td>CSS selector for an element to wait for before capture. The element may be hidden. Omit to skip this additional check; maximum 1024 bytes.</td></tr>
           <tr><td><code>delay_ms</code></td><td>GET / POST</td><td>Additional wait after readiness checks, in milliseconds. Integer from 0 to 300000; defaults to 0.</td></tr>
@@ -94,6 +95,12 @@
     </div>
     <h3>Viewport and output size</h3>
     <p>The viewport determines the page layout. The output size determines the finished PNG dimensions. The image is resized proportionally to fill the output canvas and cropped at the center when aspect ratios differ. It is never stretched or padded. All dimensions must be positive integers within the server's configured limits.</p>
+    <h3>Capture the full page</h3>
+    <pre><code>curl --fail --get 'http://localhost:8080/capture' \
+  --data-urlencode 'url=https://example.com/' \
+  --data-urlencode 'full_page=true' \
+  --output full-page.png</code></pre>
+    <p>The viewport still controls layout. Omitted output dimensions use the full page dimensions. Explicit output dimensions use the same resizing and center cropping. The full source and output must fit the configured width, height and pixel limits, even when shrinking the output; oversized documents return 502. Full-page capture does not scroll to load lazy content, expand nested scroll containers or traverse virtualized lists. Readiness still waits for fonts and viewport images.</p>
     <h3>Wait for page readiness</h3>
     <p>Wait for an element matching <code>#ready</code>, then wait one additional second before capture:</p>
     <pre><code>curl --fail --get 'http://localhost:8080/capture' \
@@ -114,14 +121,14 @@
       <li>In <code>loopback</code> mode, the body and uploaded <code>Content-Type</code> are preserved without encoding conversion or an added BOM. If the header omits charset, Chromium uses its normal encoding detection, including a BOM or <code>&lt;meta charset&gt;</code>. In <code>file</code> mode, charset must be omitted or UTF-8; other charset values return 415. The body must be valid UTF-8 and receives a UTF-8 BOM.</li>
     </ul>
     <h3>Server limits</h3>
-    <p>The following limits apply to capture requests on this server. Viewport and output dimensions are checked independently.</p>
+    <p>The following limits apply to capture requests on this server. Viewport, full-page source and output dimensions are checked independently.</p>
     <div class="table-scroll" role="region" aria-label="Server capture limits" tabindex="0">
       <table>
         <thead><tr><th scope="col">Limit</th><th scope="col">Value</th></tr></thead>
         <tbody>
           <tr><td>Maximum width</td><td>{{.MaxWidth}} pixels</td></tr>
           <tr><td>Maximum height</td><td>{{.MaxHeight}} pixels</td></tr>
-          <tr><td>Maximum viewport or output pixel count</td><td>{{.MaxPixels}} pixels</td></tr>
+          <tr><td>Maximum viewport, full-page source or output pixel count</td><td>{{.MaxPixels}} pixels</td></tr>
           <tr><td>Maximum HTML body size</td><td>{{.MaxPOSTBytes}} bytes</td></tr>
           <tr><td>Overall capture deadline</td><td>{{.CaptureTimeoutSeconds}} seconds</td></tr>
         </tbody>

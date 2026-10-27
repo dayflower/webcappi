@@ -317,6 +317,57 @@ def smoke_html(client, api, artifacts, max_post_bytes):
     (artifacts / "api-html.png").write_bytes(html_png)
 
 
+def smoke_full_page(client, api, artifacts):
+    path = "/capture?url=http://fixture:8000/full-page.html&width=320&height=200"
+    status, headers, viewport = client.get(path)
+    assert status == 200 and struct.unpack(">II", viewport[16:24]) == (320, 200)
+    for query in ("&full_page", "&full_page=", "&full_page=false"):
+        assert client.get(path + query, etag=headers["ETag"])[0] == 304
+    status, full_headers, full = client.get(
+        path + "&full_page=true", etag=headers["ETag"]
+    )
+    assert status == 200 and struct.unpack(">II", full[16:24]) == (320, 1200)
+    assert client.get(path + "&full_page=true", etag=full_headers["ETag"])[0] == 304
+    status, _, resized = client.get(
+        path + "&full_page=true&output_width=160&output_height=600"
+    )
+    assert status == 200 and struct.unpack(">II", resized[16:24]) == (160, 600)
+    for mode in ("file", "loopback"):
+        status, _, image = client.get(
+            "/capture?width=320&height=200&full_page=true&html_mode=" + mode,
+            data=b"<!doctype html><style>html,body{margin:0;height:1200px}</style>",
+            content_type="text/html",
+        )
+        assert status == 200 and struct.unpack(">II", image[16:24]) == (320, 1200)
+    assert client.get(path + "&full_page=yes")[0] == 400
+    status, _, _ = client.get(
+        "/capture?full_page=true&output_height=100",
+        data=b"<!doctype html><style>body{height:5000px}</style>",
+        content_type="text/html",
+    )
+    assert status == 502, "resizing bypassed the full-page source limit"
+    docker(
+        "exec",
+        api,
+        "webcappi",
+        "capture",
+        "-config",
+        "/etc/webcappi/config.json",
+        "-url",
+        "http://fixture:8000/full-page.html",
+        "-width",
+        "320",
+        "-height",
+        "200",
+        "-full-page",
+        "-out",
+        "/work/full-page.png",
+    )
+    cli = docker("exec", api, "cat", "/work/full-page.png", binary=True)
+    assert struct.unpack(">II", cli[16:24]) == (320, 1200)
+    (artifacts / "api-full-page.png").write_bytes(full)
+
+
 def smoke_shutdown(api, template, original):
     assert docker("exec", api, "find", "/work/captures", "-mindepth", "1") == ""
     assert template_snapshot(template) == original, "template changed"
@@ -358,6 +409,9 @@ def main():
             "        super().send_header(name, value)\n"
             "ThreadingHTTPServer(('0.0.0.0', 8000), Handler).serve_forever()\n"
         )
+        (data / "page/full-page.html").write_text(
+            "<!doctype html><style>html,body{margin:0;height:1200px;background:green}</style>"
+        )
         profile = dict(
             user_data_dir="/template/user-data",
             profile_directory="Default",
@@ -368,7 +422,7 @@ def main():
         # This exception is confined to disposable tests on this host. Production
         # examples preserve the sandbox unless explicitly configured otherwise.
         cfg = dict(
-            no_sandbox=True,
+            sandbox=False,
             work_dir="/work/captures",
             concurrency=1,
             queue_size=8,
@@ -451,6 +505,7 @@ def main():
                 ),
                 ("delay/errors", lambda: smoke_delay_errors(client)),
                 ("resize/CLI", lambda: smoke_resize_cli(client, api, artifacts)),
+                ("full page", lambda: smoke_full_page(client, api, artifacts)),
                 (
                     "HTML modes/encoding",
                     lambda: smoke_html(client, api, artifacts, cfg["max_post_bytes"]),

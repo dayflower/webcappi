@@ -282,6 +282,17 @@ func TestRedisScopeIsolation(t *testing.T) {
 	c := config.Defaults()
 	c.Cache = config.Cache{Backend: "redis", Redis: &config.Redis{Address: "redis:6379", Namespace: "production", Generation: "v1"}}
 	base := redisScope(c)
+	for _, change := range []func(*config.Config){
+		func(c *config.Config) { c.MaxWidth++ },
+		func(c *config.Config) { c.MaxHeight++ },
+		func(c *config.Config) { c.MaxPixels++ },
+	} {
+		changed := c
+		change(&changed)
+		if redisScope(changed) == base {
+			t.Fatal("full-page limits did not isolate metadata")
+		}
+	}
 	c.Profiles = map[string]capture.Profile{"default": {ProfileDirectory: "Default", UserDataDir: "/work/random-template"}}
 	if redisScope(c) != base {
 		t.Fatal("automatic profile path changed scope")

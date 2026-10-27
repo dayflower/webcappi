@@ -28,7 +28,7 @@ retention. Configuration changes require a process restart.
 | `listen` | `:8080` | HTTP bind address |
 | `auth.bearer_token_file` | unset | Absolute shared Bearer token file path; omit `auth` to disable API authentication |
 | `browser_path` | `/opt/chrome/chrome` | Absolute, preinstalled browser path |
-| `no_sandbox` | `false` | Explicit browser sandbox opt-out |
+| `sandbox` | `true` | Enable the browser sandbox; omitted, null or empty string also enables it |
 | `work_dir` | `/work` | Writable scratch and automatic template; separate from supplied templates/extensions |
 | `concurrency` | 1 | Active browser captures (1–32) |
 | `queue_size` | 8 | Additional pending captures or source validations (0–1024) |
@@ -85,9 +85,15 @@ its user-namespace sandbox. If startup reports `No usable sandbox`, follow the
 [node-policy guide](../deploy/sandbox/README.md) for the pinned browser's seccomp
 and AppArmor setup.
 
+The `sandbox` setting accepts JSON booleans. Omission, `null` and `""` mean
+`true`; only an explicit `false` disables the sandbox. The former `no_sandbox`
+field is no longer accepted; migrate `no_sandbox: true` to `sandbox: false` and
+`no_sandbox: false` to `sandbox: true`. Helm uses `browser.sandbox` with the same
+default and empty-value behavior.
+
 Incompatible policies fail startup; the service never retries without a sandbox.
-An operator can explicitly set `no_sandbox: true` (Helm:
-`browser.noSandbox=true`), which removes Chromium's sandbox isolation. Do not
+An operator can explicitly set `sandbox: false` (Helm:
+`browser.sandbox=false`), which removes Chromium's sandbox isolation. Do not
 substitute privileged mode or `SYS_ADMIN` for compatible node policies.
 
 ### Shutdown and cleanup

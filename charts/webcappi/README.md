@@ -68,7 +68,7 @@ for archive/public acceptance, initial package visibility and interrupted releas
 
 - Linux amd64 or arm64 nodes, sufficient ephemeral storage, and a node/runtime
   policy that permits Chromium's user-namespace sandbox when
-  `browser.noSandbox=false` (the default). Standard runtimes may require
+  `browser.sandbox=true` (the default). Standard runtimes may require
   existing Localhost seccomp/AppArmor profiles; follow the
   [node preparation guide](../../deploy/sandbox/README.md). The chart grants
   no additional capabilities and does not install node policy.
@@ -148,7 +148,7 @@ port 8080, security contexts and rollout strategies are fixed.
 | `replicaCount` | Integer at least 1; default 1. Values above 1 require Redis. |
 | `image.repository`, `tag`, `digest`, `pullPolicy` | A digest takes precedence over a fixed tag. `latest` is rejected. |
 | `imagePullSecrets` | Existing Secret references, also used by the bundle initContainer. |
-| `browser.noSandbox` | Boolean; default `false` enables Chromium's sandbox. Explicit `true` disables it through the application's `no_sandbox` setting. |
+| `browser.sandbox` | Default `true` enables Chromium's sandbox. Omitted, null or empty values also enable it; explicit `false` disables it through the application's `sandbox` setting. |
 | `auth.enabled`, `existingSecret`, `tokenKey` | Enabled by default; select the Secret and token key. The projected filename is always `token`. |
 | `cache.backend` | `memory` (default) or `redis`; only the selected backend is serialized. |
 | `cache.redis` | External primary address, namespace, explicit generation, optional ACL username, password Secret and TLS/CA reference. |
@@ -185,21 +185,24 @@ interpolated and checked against the application's strict Go loader in CI.
 
 ## Browser sandbox selection
 
-The default `browser.noSandbox=false` keeps Chromium's own sandbox enabled.
+The default `browser.sandbox=true` keeps Chromium's own sandbox enabled.
 An operator can explicitly opt out using a values file:
 
 ```yaml
 browser:
-  noSandbox: true
+  sandbox: false
 ```
 
 ```sh
 helm upgrade --install capture ./charts/webcappi -n captures \
-  --set auth.existingSecret=capture-auth --set browser.noSandbox=true
+  --set auth.existingSecret=capture-auth --set browser.sandbox=false
 ```
 
-This boolean maps directly to `config.json`'s `no_sandbox` field. Set it back
-to `false` to enable the sandbox again. A config checksum triggers a Deployment
+This setting maps directly to `config.json`'s `sandbox` field. Set it back
+to `true` to enable the sandbox again. Omitted, null and empty string values
+also enable it. Replace the former `browser.noSandbox` key with
+`browser.sandbox` and invert the boolean when upgrading. A config checksum
+triggers a Deployment
 update when it changes. There is no automatic fallback to an unsandboxed browser
 when startup fails. Disabling Chromium's sandbox removes its internal process
 isolation; the chart's non-root identity, read-only mounts, dropped capabilities,
@@ -219,7 +222,7 @@ Provision the [node policies](../../deploy/sandbox/README.md) before installing:
 
 ```yaml
 browser:
-  noSandbox: false
+  sandbox: true
   seccompProfile:
     type: Localhost
     localhostProfile: webcappi/chrome.json

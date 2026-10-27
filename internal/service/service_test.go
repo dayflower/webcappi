@@ -179,12 +179,28 @@ func TestMetadataKey(t *testing.T) {
 		func(r *capture.Request) { r.ProfileName = "other" },
 		func(r *capture.Request) { r.ReadySelector = "#ready" },
 		func(r *capture.Request) { r.DelayMS = 100 },
+		func(r *capture.Request) { r.FullPage = true },
 	}
 	for _, change := range changes {
 		changed := base
 		change(&changed)
 		if Key(changed) == Key(base) {
 			t.Fatal("capture conditions missing from key")
+		}
+	}
+}
+
+func TestFullPageMetadataKey(t *testing.T) {
+	base := request("http://fixture")
+	base.FullPage = true
+	for _, change := range []func(*capture.Request){
+		func(r *capture.Request) { r.OutputWidth = r.Width },
+		func(r *capture.Request) { r.OutputHeight = r.Height },
+	} {
+		explicit := base
+		change(&explicit)
+		if Key(base) == Key(explicit) {
+			t.Fatal("automatic full-page output size shares an explicit-size key")
 		}
 	}
 }

@@ -33,7 +33,7 @@ def main():
         data.chmod(0o755)
         config = {
             # This exception only applies to these disposable test containers.
-            "no_sandbox": True,
+            "sandbox": False,
             "work_dir": "/work/captures",
             "capture_timeout_seconds": 15,
             "cache": {

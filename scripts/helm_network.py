@@ -475,7 +475,7 @@ def network_suite(
     fixture_resources(cluster)
     values = {
         "image": image_values(args.image),
-        "browser": {"noSandbox": False, **cluster.policy.values},
+        "browser": {"sandbox": True, **cluster.policy.values},
         "auth": {"existingSecret": "api-auth", "tokenKey": "access-token"},
         "capture": {"maxPOSTBytes": 2097152},
         "service": {

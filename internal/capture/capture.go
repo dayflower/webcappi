@@ -41,10 +41,12 @@ type Request struct {
 	Profile         Profile
 	ReadySelector   string
 	DelayMS         int
+	FullPage        bool
 	Revalidate      *SourceResponse
 }
 
-// OutputSize defaults each omitted output dimension to its viewport dimension.
+// OutputSize resolves viewport-mode output dimensions. Full-page defaults
+// require the document dimensions measured during capture.
 func (r Request) OutputSize() (int, int) {
 	w, h := r.OutputWidth, r.OutputHeight
 	if w == 0 {
@@ -61,6 +63,9 @@ type Renderer struct {
 	WorkDir         string
 	MaxProfileBytes int64
 	ResizeAlgorithm ResizeAlgorithm
+	MaxWidth        int
+	MaxHeight       int
+	MaxPixels       int64
 }
 
 // Check starts a browser on a disposable clone without contacting a website.
@@ -223,6 +228,10 @@ func (r Renderer) CaptureWithMetadata(ctx context.Context, req Request) (result 
 		case <-tab.Done():
 			return result, tab.Err()
 		}
+	}
+	if req.FullPage {
+		result.PNG, err = r.captureFullPage(tab, req)
+		return result, err
 	}
 	png, err := chromedp.Run(tab, chromedp.CaptureScreenshot())
 	if err != nil {

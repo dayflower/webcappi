@@ -21,7 +21,7 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	if err != nil {
 		return req, errors.New("invalid query encoding")
 	}
-	allowed := map[string]bool{"url": true, "width": true, "height": true, "output_width": true, "output_height": true, "profile": true, "ready_selector": true, "delay_ms": true}
+	allowed := map[string]bool{"url": true, "width": true, "height": true, "output_width": true, "output_height": true, "profile": true, "ready_selector": true, "delay_ms": true, "full_page": true}
 	if r.Method == http.MethodPost {
 		delete(allowed, "url")
 		allowed["html_mode"] = true
@@ -41,6 +41,13 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 		}
 	}
 	in := captureinput.Input{ReadySelector: q.Get("ready_selector")}
+	switch q.Get("full_page") {
+	case "", "false":
+	case "true":
+		in.FullPage = true
+	default:
+		return req, errors.New("full_page must be true, false or empty")
+	}
 	if r.Method == http.MethodGet {
 		u := q.Get("url")
 		in.URL = &u

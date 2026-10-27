@@ -23,7 +23,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{- define "webcappi.config" -}}
-{{- $config := dict "listen" ":8080" "browser_path" "/opt/chrome/chrome" "no_sandbox" .Values.browser.noSandbox "work_dir" "/work/captures" "profiles" .Values.profiles.descriptors -}}
+{{- $sandbox := true -}}
+{{- if kindIs "bool" .Values.browser.sandbox -}}
+{{- $sandbox = .Values.browser.sandbox -}}
+{{- end -}}
+{{- $config := dict "listen" ":8080" "browser_path" "/opt/chrome/chrome" "sandbox" $sandbox "work_dir" "/work/captures" "profiles" .Values.profiles.descriptors -}}
 {{- $fields := dict "concurrency" "concurrency" "queueSize" "queue_size" "maxRequests" "max_requests" "timeoutSeconds" "capture_timeout_seconds" "metadataMaxBytes" "metadata_max_bytes" "metadataMaxEntries" "metadata_max_entries" "maxAgeSeconds" "max_age_seconds" "maxWidth" "max_width" "maxHeight" "max_height" "maxPixels" "max_pixels" "resizeAlgorithm" "resize_algorithm" "maxProfileBytes" "max_profile_bytes" "maxPOSTBytes" "max_post_bytes" "maxPNGBytes" "max_png_bytes" -}}
 {{- range $value, $field := $fields -}}
 {{- $_ := set $config $field (index $.Values.capture $value) -}}

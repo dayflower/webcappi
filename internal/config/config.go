@@ -24,7 +24,7 @@ type Config struct {
 	Auth                  *Auth                      `json:"auth,omitempty"`
 	Cache                 Cache                      `json:"cache"`
 	BrowserPath           string                     `json:"browser_path"`
-	NoSandbox             bool                       `json:"no_sandbox"`
+	Sandbox               bool                       `json:"sandbox"`
 	WorkDir               string                     `json:"work_dir"`
 	Concurrency           int                        `json:"concurrency"`
 	QueueSize             int                        `json:"queue_size"`
@@ -48,7 +48,7 @@ type Auth struct {
 }
 
 func Defaults() Config {
-	return Config{Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, MaxAgeSeconds: 60, MetadataMaxBytes: 1 << 20, MetadataMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, ResizeAlgorithm: capture.ResizeBilinear, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
+	return Config{Sandbox: true, Listen: ":8080", BrowserPath: "/opt/chrome/chrome", WorkDir: "/work", Concurrency: 1, QueueSize: 8, MaxRequests: 64, CaptureTimeoutSeconds: 30, MaxAgeSeconds: 60, MetadataMaxBytes: 1 << 20, MetadataMaxEntries: 128, MaxWidth: 4096, MaxHeight: 4096, MaxPixels: 8_388_608, ResizeAlgorithm: capture.ResizeBilinear, MaxProfileBytes: 512 << 20, MaxPOSTBytes: 1 << 20, MaxPNGBytes: 40 << 20}
 }
 
 func Load(path string) (Config, error) {
@@ -60,12 +60,23 @@ func Load(path string) (Config, error) {
 	defer f.Close()
 	d := json.NewDecoder(io.LimitReader(f, 1<<20))
 	d.DisallowUnknownFields()
-	decoded := &c
+	// Shadow sandbox while decoding so null and an empty string retain the safe
+	// default. Embedding the alias preserves strict checks for all other fields.
+	type fields Config
+	decoded := &struct {
+		*fields
+		Sandbox json.RawMessage `json:"sandbox"`
+	}{fields: (*fields)(&c)}
 	if err = d.Decode(&decoded); err != nil {
 		return c, err
 	}
 	if decoded == nil {
 		return c, errors.New("config must contain one JSON object")
+	}
+	if value := string(decoded.Sandbox); value != "" && value != "null" && value != `""` {
+		if err := json.Unmarshal(decoded.Sandbox, &c.Sandbox); err != nil {
+			return c, fmt.Errorf("sandbox must be a boolean or empty: %w", err)
+		}
 	}
 	var extra any
 	if err = d.Decode(&extra); err != io.EOF {

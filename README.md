@@ -55,7 +55,24 @@ curl --get http://localhost:8080/capture \
 ```
 
 This lays out the page at 1200 × 800, then resizes and center-crops the visible
-viewport into a 600 × 600 PNG. It does not capture the full scrollable page.
+viewport into a 600 × 600 PNG. To capture the full page at its natural size,
+use `full_page=true` and omit the output dimensions as shown below.
+
+### Capture the full page
+
+```sh
+curl --get http://localhost:8080/capture \
+  --data-urlencode url=https://example.com/ \
+  --data-urlencode full_page=true \
+  --output full-page.png
+```
+
+The viewport still determines layout. Omitted output dimensions use the full
+page dimensions; explicit output dimensions retain resizing and center cropping.
+Omitted or empty `full_page` means `false`. This does not scroll to trigger lazy
+loading or expand nested scroll containers. The complete source and output must
+fit `max_width`, `max_height` and `max_pixels`, even when resizing down. The default
+maximum height is 4096 pixels; increase the configured limits for longer pages.
 
 ### Capture HTML
 
@@ -79,13 +96,15 @@ over local HTTP during capture.
 | --- | --- | --- |
 | `url` | HTTP(S) URL; required for GET, unavailable on POST | — |
 | `width`, `height` | Viewport size in CSS pixels | `1280`, `720` |
-| `output_width`, `output_height` | PNG dimensions after resizing and center cropping | Viewport size |
+| `output_width`, `output_height` | PNG dimensions after resizing and center cropping | Captured size |
+| `full_page` | Capture the full scrollable page; empty means `false` | `false` |
 | `profile` | Configured browser profile | `default` |
 | `ready_selector` | Wait for an element matching this CSS selector | — |
 | `delay_ms` | Extra wait after readiness checks, in milliseconds | `0` |
 | `html_mode` | POST only: `file` or `loopback` | `file` |
 
 Captures wait for page load, configured selectors, fonts and visible images.
+Full-page capture uses the same waits; offscreen lazy images may remain unloaded.
 Use `ready_selector` for application-specific readiness, such as content loaded
 by JavaScript; `delay_ms` adds a fixed wait within the capture deadline.
 

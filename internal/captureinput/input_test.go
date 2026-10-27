@@ -25,6 +25,11 @@ func TestDimensions(t *testing.T) {
 		err  string
 	}{
 		{"defaults", Input{}, [4]int{1280, 720, 1280, 720}, ""},
+		{"full page", Input{FullPage: true}, [4]int{1280, 720, 0, 0}, ""},
+		{"full page output width", Input{FullPage: true, OutputWidth: ptr(400)}, [4]int{1280, 720, 400, 0}, ""},
+		{"full page output height", Input{FullPage: true, OutputHeight: ptr(400)}, [4]int{1280, 720, 0, 400}, ""},
+		{"full page output limit", Input{FullPage: true, OutputWidth: ptr(4097)}, [4]int{}, "output exceeds configured limits"},
+		{"full page output pixels", Input{FullPage: true, OutputWidth: ptr(4096), OutputHeight: ptr(4096)}, [4]int{}, "output exceeds configured limits"},
 		{"viewport width", Input{Width: ptr(800)}, [4]int{800, 720, 800, 720}, ""},
 		{"viewport height", Input{Height: ptr(480)}, [4]int{1280, 480, 1280, 480}, ""},
 		{"output width", Input{OutputWidth: ptr(400)}, [4]int{1280, 720, 400, 720}, ""},

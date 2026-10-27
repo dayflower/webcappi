@@ -195,8 +195,8 @@ def main():
             spec = pod["spec"]
             api = spec["containers"][0]
             config = json.loads(configmap["data"]["config.json"])
-            assert config["no_sandbox"] is requested.get("browser", {}).get(
-                "noSandbox", False
+            assert config["sandbox"] is (
+                requested.get("browser", {}).get("sandbox") is not False
             )
             assert config["listen"] == ":8080"
             assert config["work_dir"] == "/work/captures"
@@ -343,9 +343,14 @@ def main():
 
         memory, _, _ = render("memory")
         assert memory["spec"]["strategy"] == {"type": "Recreate"}
-        explicit, _, _ = render("sandbox-enabled", {"browser": {"noSandbox": False}})
-        disabled, _, _ = render("sandbox-disabled", {"browser": {"noSandbox": True}})
+        explicit, _, _ = render("sandbox-enabled", {"browser": {"sandbox": True}})
+        disabled, _, _ = render("sandbox-disabled", {"browser": {"sandbox": False}})
         assert explicit == memory, "explicit sandbox default changed the Deployment"
+        for value in (None, ""):
+            empty, _, _ = render(
+                "sandbox-empty-" + str(value), {"browser": {"sandbox": value}}
+            )
+            assert empty == memory, "empty sandbox changed the default"
         old_pod = memory["spec"]["template"]
         new_pod = disabled["spec"]["template"]
         assert (
@@ -355,14 +360,14 @@ def main():
         assert new_pod["spec"] == old_pod["spec"], (
             "sandbox opt-out changed container isolation settings"
         )
-        render("redis-sandbox-disabled", merge(REDIS, {"browser": {"noSandbox": True}}))
+        render("redis-sandbox-disabled", merge(REDIS, {"browser": {"sandbox": False}}))
         render(
             "disabled-with-profiles",
             merge(
                 BUNDLE,
                 {
                     "browser": {
-                        "noSandbox": True,
+                        "sandbox": False,
                         "seccompProfile": {
                             "type": "Localhost",
                             "localhostProfile": "webcappi/chrome.json",
@@ -822,9 +827,10 @@ def main():
             ),
             ("capacity", {"capture": {"metadataMaxBytes": -1}}, "metadataMaxBytes"),
             ("raw-config", {"config": {"no_sandbox": True}}, "config"),
-            ("sandbox", {"capture": {"no_sandbox": True}}, "no_sandbox"),
-            ("sandbox-string", {"browser": {"noSandbox": "true"}}, "noSandbox"),
-            ("sandbox-number", {"browser": {"noSandbox": 1}}, "noSandbox"),
+            ("sandbox", {"capture": {"sandbox": True}}, "sandbox"),
+            ("legacy-sandbox", {"browser": {"noSandbox": False}}, "noSandbox"),
+            ("sandbox-string", {"browser": {"sandbox": "true"}}, "sandbox"),
+            ("sandbox-number", {"browser": {"sandbox": 1}}, "sandbox"),
             (
                 "bundle-missing",
                 {"profiles": {"descriptors": BUNDLE["profiles"]["descriptors"]}},

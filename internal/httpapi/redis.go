@@ -72,12 +72,16 @@ func redisScope(c config.Config) string {
 		Bytes          int64
 		Retention      int
 		CaptureTimeout int
+		MaxWidth       int
+		MaxHeight      int
+		MaxPixels      int64
 	}{
 		Schema: "metadata-v1", Architecture: runtime.GOARCH, Browser: capture.BrowserVersion,
 		Namespace: c.Cache.Redis.Namespace, Generation: c.Cache.Redis.Generation,
 		Profiles: profiles, Resize: c.ResizeAlgorithm, MaxAge: c.MaxAgeSeconds,
 		Entries: c.MetadataMaxEntries, Bytes: c.MetadataMaxBytes,
 		Retention: c.Cache.Redis.Retention(), CaptureTimeout: c.CaptureTimeoutSeconds,
+		MaxWidth: c.MaxWidth, MaxHeight: c.MaxHeight, MaxPixels: c.MaxPixels,
 	})
 	h := sha256.Sum256(b)
 	return "webcappi:{" + hex.EncodeToString(h[:]) + "}:"

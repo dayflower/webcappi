@@ -47,10 +47,11 @@ func registerCaptureFlags(fs *flag.FlagSet) *captureFlags {
 	f.values.URL = fs.String("url", "", "page URL")
 	f.values.Width = fs.Int("width", capture.DefaultViewportWidth, "viewport width")
 	f.values.Height = fs.Int("height", capture.DefaultViewportHeight, "viewport height")
-	f.outputWidth = fs.Int("output-width", 0, "PNG width (defaults to viewport width)")
-	f.outputHeight = fs.Int("output-height", 0, "PNG height (defaults to viewport height)")
+	f.outputWidth = fs.Int("output-width", 0, "PNG width (defaults to captured width)")
+	f.outputHeight = fs.Int("output-height", 0, "PNG height (defaults to captured height)")
 	f.out = fs.String("out", "capture.png", "PNG output path")
 	fs.StringVar(&f.values.ReadySelector, "ready-selector", "", "page readiness CSS selector")
+	fs.BoolVar(&f.values.FullPage, "full-page", false, "capture the full scrollable page")
 	return &f
 }
 
@@ -73,7 +74,7 @@ type captureGetter interface {
 
 func captureToFile(ctx context.Context, c config.Config, s captureGetter, in captureinput.Input, out string) error {
 	// Retain the old CLI's encoded-size limit without constructing an HTTP request.
-	q := url.Values{"url": {*in.URL}, "profile": {*in.ProfileName}, "ready_selector": {in.ReadySelector}}
+	q := url.Values{"url": {*in.URL}, "profile": {*in.ProfileName}, "ready_selector": {in.ReadySelector}, "full_page": {strconv.FormatBool(in.FullPage)}}
 	for key, value := range map[string]*int{"width": in.Width, "height": in.Height, "output_width": in.OutputWidth, "output_height": in.OutputHeight} {
 		if value != nil {
 			q.Set(key, strconv.Itoa(*value))

@@ -24,7 +24,7 @@ def smoke_automatic(root, settings, bundles, profile, prefix):
         name = prefix + ("-named" if named else "-automatic")
         config = root / (name + ".json")
         # Sandbox opt-out is limited to this disposable runtime test.
-        cfg = dict(no_sandbox=True, work_dir="/work/captures")
+        cfg = dict(sandbox=False, work_dir="/work/captures")
         if named:
             cfg["profiles"] = dict(alternate=profile)
         config.write_text(json.dumps(cfg))
@@ -232,9 +232,7 @@ def export_profile(resources, root, settings, prefix):
 
 
 def smoke_initialized(resources, root, settings, bundles, profile, prefix, client):
-    cfg = dict(
-        no_sandbox=True, work_dir="/work/captures", profiles={"default": profile}
-    )
+    cfg = dict(sandbox=False, work_dir="/work/captures", profiles={"default": profile})
     config = root / "config.json"
     config.write_text(json.dumps(cfg))
     resources.run(

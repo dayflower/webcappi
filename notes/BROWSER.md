@@ -36,7 +36,7 @@ The allocator explicitly overrides chromedp's defaults:
 | `password-store` | `basic`, consistently during preparation and capture |
 | `disable-dev-shm-usage` | `false`; provision `/dev/shm` explicitly |
 | `force-device-scale-factor`, CDP device scale | `1` |
-| `no-sandbox` | Explicit boolean from configuration, default `false` |
+| `no-sandbox` | Inverse of configuration `sandbox`; omitted by default and when `sandbox` is empty |
 
 The implementation was checked against the pinned
 [allocator source](https://github.com/chromedp/chromedp/blob/v0.21.0/allocate.go)
