@@ -29,6 +29,8 @@ REGISTRY = "oci://ghcr.io/dayflower/charts"
 IMAGE = "ghcr.io/dayflower/webcappi"
 HELM = ROOT / "bin/chart-tools/helm"
 SUITES = {"enabled": [], "disabled": [], "network": ["--network-only"]}
+PUBLIC_SUITES = {"distribution": ["--distribution-only"]}
+SCHEMA_VERSION = 2
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
@@ -342,6 +344,7 @@ def acceptance(args):
     proof = args.output / "acceptance.json"
     proof.unlink(missing_ok=True)
     expected = identity(args.archive, args.tag, args.revision, args.image_digest)
+    expected["schema_version"] = SCHEMA_VERSION
     if args.archive.resolve().is_relative_to(args.output.resolve()):
         raise ValueError(
             "Candidate archive must be outside the acceptance output directory"
@@ -360,7 +363,9 @@ def acceptance(args):
                 raise ValueError("Public chart manifest changed during acceptance")
         expected["manifest_digest"] = "sha256:" + sha256(raw)
     expected["archive_sha256"] = sha256(archive.read_bytes())
-    static_check(archive, args.helm, args.output / "checked")
+    # Public contents already match the fully qualified candidate, including modes.
+    if not args.public or args.validation_only:
+        static_check(archive, args.helm, args.output / "checked")
     if args.validation_only:
         # Static checks are deliberately not an acceptance proof.
         return expected
@@ -370,9 +375,10 @@ def acceptance(args):
     if platform.system() != "Linux" or arch is None:
         raise ValueError("Distribution acceptance requires native Linux amd64/arm64")
     expected["platform"] = "linux/" + arch
-    run("docker", "pull", f"{IMAGE}@{args.image_digest}")
+    with helm_environment() as env:
+        run("docker", "pull", f"{IMAGE}@{args.image_digest}", env=env)
     expected["suites"] = {}
-    for name, options in SUITES.items():
+    for name, options in (PUBLIC_SUITES if args.public else SUITES).items():
         output = args.output / name
         run(
             sys.executable,
@@ -399,11 +405,17 @@ def acceptance(args):
         if not result.get("policy"):
             raise ValueError("Sandbox policy evidence is missing")
         expected["suites"][name] = result
+    validate_acceptance(expected, expected, expected["stage"], arch)
+    if args.public and manifest(expected["version"]) != raw:
+        raise ValueError("Public chart manifest changed during acceptance")
     write_json(proof, expected)
     return expected
 
 
 def validate_acceptance(record, item, stage, arch):
+    schema = proof_schema(item)
+    if schema > proof_schema(record):
+        raise ValueError("Acceptance schema differs from distribution")
     if item["stage"] != stage or item["platform"] != "linux/" + arch:
         raise ValueError("Acceptance stage/platform mismatch")
     for key in (
@@ -422,7 +434,8 @@ def validate_acceptance(record, item, stage, arch):
         )
     ):
         raise ValueError("Anonymous chart identity differs")
-    if set(item["suites"]) != set(SUITES):
+    suites = PUBLIC_SUITES if stage == "public" and schema == 2 else SUITES
+    if set(item["suites"]) != set(suites):
         raise ValueError("Acceptance suites are incomplete")
     for name, result in item["suites"].items():
         if (
@@ -445,9 +458,20 @@ def validate_acceptance(record, item, stage, arch):
             raise ValueError("Effective browser sandbox mode differs")
         if name == "network" and result.get("network", {}).get("result") != "passed":
             raise ValueError("Network acceptance is missing")
+        if name == "distribution" and result.get("suite") != "distribution":
+            raise ValueError("Distribution smoke evidence is missing")
+
+
+def proof_schema(record):
+    # Published v1 records had no explicit version and required all three suites.
+    version = record.get("schema_version", 1)
+    if type(version) is not int or version not in (1, SCHEMA_VERSION):
+        raise ValueError("Unsupported chart acceptance schema")
+    return version
 
 
 def validate_proof(record):
+    proof_schema(record)
     for stage in ("archive", "public"):
         for arch in ("amd64", "arm64"):
             validate_acceptance(record, record["acceptance"][stage][arch], stage, arch)
@@ -456,6 +480,7 @@ def validate_proof(record):
 def finalize(args):
     (args.output / "chart-distribution.json").unlink(missing_ok=True)
     expected = identity(args.archive, args.tag, args.revision, args.image_digest)
+    expected["schema_version"] = SCHEMA_VERSION
     expected["acceptance"] = {"archive": {}, "public": {}}
     for path in sorted(args.evidence.rglob("acceptance.json")):
         item = json.loads(path.read_text())

@@ -107,7 +107,7 @@ jobs:
     needs: [package, archive]
     if: ${{ !cancelled() && !failure() && (inputs.stage == 'public' || inputs.stage == 'recovery') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 100
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -126,7 +126,7 @@ jobs:
         with:
           name: ${{ needs.package.outputs.artifact || inputs.candidate_artifact }}
           path: artifacts/candidate
-      - name: Pull anonymously and qualify the public chart without a source fallback
+      - name: Verify anonymous chart identity and run enabled distribution smoke
         run: |
           version="${RELEASE_TAG#v}"
           python3 scripts/release-charts.py accept --public --archive "artifacts/candidate/webcappi-$version.tgz" --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --image-digest "$IMAGE_DIGEST" --output artifacts/chart-public
@@ -158,7 +158,7 @@ jobs:
         with:
           pattern: chart-proof-${{ inputs.tag }}-*
           path: artifacts/evidence
-      - name: Require archive and anonymous native acceptance on both architectures
+      - name: Require full archive acceptance and anonymous distribution smoke on both architectures
         run: |
           version="${RELEASE_TAG#v}"
           python3 scripts/release-charts.py finalize --archive "artifacts/candidate/webcappi-$version.tgz" --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --image-digest "$IMAGE_DIGEST" --evidence artifacts/evidence

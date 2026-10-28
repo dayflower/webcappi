@@ -817,13 +817,27 @@ duplicate, non-regular or unsafe archive entries are rejected.
 After publication, both native runners pull with empty Helm and Docker credential
 locations. They compare every file with the verified candidate, verify the chart
 layer SHA-256 against the OCI manifest, check that the manifest has not changed,
-and rerun all three suites using the downloaded archive. There is no local source
-fallback. A failure at either architecture or sandbox mode prevents GitHub Release
-publication. The final `chart-distribution.json` contains chart version and OCI
-manifest digest, the actual downloaded archive SHA-256, content fingerprint,
+and run a distribution smoke using the downloaded archive. This installs the
+unmodified default image with the sandbox enabled and verifies readiness, token
+rejection and an authenticated PNG capture of a private Service DNS target. A
+separate installation of the diagnostic image derived from that same image
+checks Chromium's active sandbox and scoped policy enforcement. The smoke does
+not rerun lifecycle, disabled-mode, Redis or Ingress/Gateway acceptance; those
+remain mandatory in the full pre-publication archive qualification. The identical
+public contents do not need a second full static suite either. The registry
+manifest is checked again after runtime smoke. There is no local source fallback.
+A failure on either architecture prevents GitHub Release publication. The final
+`chart-distribution.json` contains chart version and OCI manifest digest, the
+actual downloaded archive SHA-256, content fingerprint,
 source revision, image digest and all four native archive/public acceptance
-records, including sandbox and network evidence. Validation-only runs cannot
-produce this proof. It is attached to the draft and covered by `SHA256SUMS` before
+records. Schema version 2 distinguishes full archive suites (enabled, disabled
+and network) from the public distribution smoke (enabled only). Both are required
+on native amd64 and arm64; public smoke cannot substitute for archive acceptance.
+Historical version 1 records without a `schema_version` still require all three
+suites at both stages. Full legacy receipts can be reused in a version 2 record,
+and existing valid release assets retain their original bytes on recovery.
+Validation-only runs cannot produce this proof. It is attached to the draft and
+covered by `SHA256SUMS` before
 the GitHub Release is published, together with fixed-version installation notes.
 Binary archive names and contents remain compatible with older releases.
 Successful receipts from earlier attempts of the same Actions run can satisfy a
@@ -869,9 +883,10 @@ needed, set visibility to **Public**, and grant this repository the required
 Do not broaden workflow write permissions to work around access failures. The
 first anonymous check can fail until this setup is complete; no completed GitHub
 Release is announced in that state. After fixing visibility, run **GitHub Release
-→ Run workflow → main**, with `tag=v0.1.2`. This reconstructs and qualifies both
-candidate and public chart again on both architectures, with read-only package
-permissions. It does not overwrite, delete or republish the chart. It also works
+→ Run workflow → main**, with `tag=v0.1.2`. This reconstructs and qualifies the
+candidate with the full suites and the public chart with distribution smoke again
+on both architectures, with read-only package permissions. It does not overwrite,
+delete or republish the chart. It also works
 after the original Actions artifacts expire.
 
 If publication never occurred, rerun the original tag's Release workflow after
@@ -1289,3 +1304,37 @@ anonymous GHCR runtime acceptance and the chart-enabled GitHub Release remain
 unverified until the first post-merge release. No release tag or real GHCR/GitHub
 Release was created or changed by local validation. The public-distribution
 completion condition remains pending that evidence.
+
+### Public distribution smoke verification
+
+On **2026-10-28 (Asia/Tokyo)**, the new public acceptance path passed on native
+**linux/amd64**, using the existing published **v0.1.5** chart and image. The
+candidate was reconstructed from its release revision and compared with an
+anonymous GHCR download. Public acceptance took **176.609 seconds**, including
+the cold image pull, diagnostic-image build, standard-image capture, active
+Chromium sandbox checks and cleanup; candidate reconstruction/static validation
+and workflow setup are outside that measurement.
+
+The version 2 receipt records the enabled distribution suite and pinned image
+`sha256:d7860e3a0be8b6cc5e977decb7f65a1da9dcb18f221bc174cf3185d575f671a9`.
+Readiness, token rejection, a private Service DNS capture, Chromium's nested
+sandbox and enforced AppArmor passed. The owned kind cluster and diagnostic
+image were independently confirmed absent after success, and the policy record
+reports AppArmor removal. This probe used read-only registry operations.
+
+All **89 Python tests**, Go **1.26.10** race tests and vet, formatting/static
+analysis, Actionlint and chart checks passed. Chart checks covered 39 valid
+configurations, 101 rejected configurations and 125 resources with no schema
+skips. Tests cover full archive qualification, both native receipt requirements,
+legacy release-asset recovery, manifest changes and failure/interruption cleanup.
+`make image`, `make browser-test` and `scripts/container-smoke.py` also passed on
+native amd64. These existing browser/profile/REST fixtures explicitly disable the
+sandbox; their results are separate from the enabled public-distribution smoke.
+
+Evidence is under `artifacts/chart-public-smoke-published/`; `summary.json` records
+the duration and `public/distribution/` holds runtime diagnostics and the PNG.
+Static chart outputs are under `artifacts/chart-public-smoke-static/`.
+The browser/REST outputs are under `artifacts/chart-public-smoke-browser/`, with
+logs in the published-smoke directory.
+Native arm64 and GitHub-hosted execution were not run locally. The timing is a
+local measurement; the next release must establish the workflow's actual saving.
