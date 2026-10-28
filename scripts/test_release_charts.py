@@ -18,6 +18,7 @@ from unittest.mock import patch
 import yaml
 
 import release_charts as charts
+from github_release import reuse_chart_record
 
 REVISION = "a" * 40
 DIGEST = "sha256:" + "b" * 64
@@ -269,7 +270,11 @@ with helm_environment() as env:
         proof.write_text("stale success")
         with (
             patch.object(charts, "static_check"),
-            patch.object(charts, "run", side_effect=RuntimeError("capture failed")),
+            patch.object(charts.platform, "system", return_value="Linux"),
+            patch.object(charts.platform, "machine", return_value="x86_64"),
+            patch.object(
+                charts, "run", side_effect=[None, RuntimeError("capture failed")]
+            ),
         ):
             with self.assertRaisesRegex(RuntimeError, "capture failed"):
                 charts.acceptance(self.args)
@@ -300,37 +305,7 @@ with helm_environment() as env:
     def test_finalize_requires_both_native_architectures_modes_and_public_identity(
         self,
     ):
-        record = charts.identity(self.candidate, TAG, REVISION, DIGEST)
-        record.update(
-            manifest_digest="sha256:" + "c" * 64,
-            archive_sha256="d" * 64,
-            acceptance={"archive": {}, "public": {}},
-        )
-        for stage in record["acceptance"]:
-            for arch in ("amd64", "arm64"):
-                item = {
-                    key: value for key, value in record.items() if key != "acceptance"
-                }
-                item.update(
-                    stage=stage,
-                    platform="linux/" + arch,
-                    anonymous=stage == "public",
-                    suites={},
-                )
-                for name in charts.SUITES:
-                    item["suites"][name] = {
-                        "result": "passed",
-                        "platform": item["platform"],
-                        "sandbox_mode": "disabled" if name == "disabled" else "enabled",
-                        "default_image": {
-                            "passed": True,
-                            "image": charts.IMAGE + "@" + DIGEST,
-                        },
-                        "policy": {"enforced": True},
-                        "sandbox_evidence": {"no_sandbox": name == "disabled"},
-                        "network": {"result": "passed"} if name == "network" else None,
-                    }
-                record["acceptance"][stage][arch] = item
+        record = self.acceptance_record()
         charts.validate_proof(record)
         self.args.evidence = self.root / "evidence"
         for stage, platforms in record["acceptance"].items():
@@ -344,6 +319,7 @@ with helm_environment() as env:
         )
         charts.finalize(self.args)
         output = json.loads((self.args.output / "chart-distribution.json").read_text())
+        self.assertEqual(output["schema_version"], charts.SCHEMA_VERSION)
         charts.validate_proof(output)
         changed = dict(
             record["acceptance"]["public"]["amd64"], manifest_digest="changed"
@@ -368,6 +344,182 @@ with helm_environment() as env:
             mutate(broken)
             with self.assertRaises((ValueError, KeyError)):
                 charts.validate_proof(broken)
+
+    def acceptance_record(self, schema=None):
+        record = charts.identity(self.candidate, TAG, REVISION, DIGEST)
+        record.update(
+            manifest_digest="sha256:" + "c" * 64,
+            archive_sha256="d" * 64,
+            acceptance={"archive": {}, "public": {}},
+        )
+        if schema is not None:
+            record["schema_version"] = schema
+        for stage in record["acceptance"]:
+            for arch in ("amd64", "arm64"):
+                item = {
+                    key: value for key, value in record.items() if key != "acceptance"
+                }
+                item.update(
+                    stage=stage,
+                    platform="linux/" + arch,
+                    anonymous=stage == "public",
+                    suites={},
+                )
+                suites = (
+                    charts.PUBLIC_SUITES
+                    if stage == "public" and schema == 2
+                    else charts.SUITES
+                )
+                for name in suites:
+                    item["suites"][name] = {
+                        "result": "passed",
+                        "platform": item["platform"],
+                        "sandbox_mode": "disabled" if name == "disabled" else "enabled",
+                        "default_image": {
+                            "passed": True,
+                            "image": charts.IMAGE + "@" + DIGEST,
+                        },
+                        "policy": {"enforced": True},
+                        "sandbox_evidence": {"no_sandbox": name == "disabled"},
+                        "network": {"result": "passed"} if name == "network" else None,
+                        "suite": "distribution" if name == "distribution" else name,
+                    }
+                record["acceptance"][stage][arch] = item
+        return record
+
+    def test_v2_public_smoke_requires_full_archive_and_both_native_platforms(self):
+        record = self.acceptance_record(schema=2)
+        charts.validate_proof(record)
+        self.args.evidence = self.root / "evidence"
+        for stage, platforms in record["acceptance"].items():
+            for arch, item in platforms.items():
+                charts.write_json(
+                    self.args.evidence / stage / arch / "acceptance.json", item
+                )
+        charts.finalize(self.args)
+        output = json.loads((self.args.output / "chart-distribution.json").read_text())
+        self.assertEqual(output["schema_version"], 2)
+        charts.validate_proof(output)
+        for mutate in (
+            lambda r: r["acceptance"]["archive"]["amd64"].update(
+                suites=r["acceptance"]["public"]["amd64"]["suites"]
+            ),
+            lambda r: r["acceptance"]["archive"]["arm64"]["suites"].pop("network"),
+            lambda r: r["acceptance"]["public"].pop("arm64"),
+            lambda r: r["acceptance"]["public"]["arm64"].update(anonymous=False),
+            lambda r: r["acceptance"]["public"]["amd64"]["suites"][
+                "distribution"
+            ].update(suite="lifecycle"),
+            lambda r: r["acceptance"]["public"]["amd64"]["suites"][
+                "distribution"
+            ].update(sandbox_evidence={"no_sandbox": True}),
+            lambda r: r["acceptance"]["public"]["amd64"]["suites"][
+                "distribution"
+            ].update(default_image={"passed": True, "image": "another:image"}),
+            lambda r: r.pop("schema_version"),
+            lambda r: r.update(schema_version=3),
+            lambda r: r["acceptance"]["public"]["amd64"].update(schema_version=3),
+        ):
+            broken = deepcopy(record)
+            mutate(broken)
+            with self.assertRaises((ValueError, KeyError)):
+                charts.validate_proof(broken)
+
+    def test_public_acceptance_only_runs_distribution_smoke_on_downloaded_archive(self):
+        self.args.public = True
+        item = self.acceptance_record(schema=2)["acceptance"]["public"]["amd64"]
+
+        def smoke(*args, **kwargs):
+            if args[:2] == ("docker", "pull"):
+                self.assertFalse(Path(kwargs["env"]["DOCKER_CONFIG"]).exists())
+                return
+            self.assertIn("--distribution-only", args)
+            self.assertEqual(args[args.index("--chart") + 1], self.downloaded)
+            output = args[args.index("--artifacts") + 1]
+            charts.write_json(output / "result.json", item["suites"]["distribution"])
+            charts.write_json(output / "chromium-sandbox.json", {"no_sandbox": False})
+
+        with (
+            patch.object(charts, "manifest", return_value=b"{}"),
+            patch.object(charts, "pull", return_value=self.downloaded),
+            patch.object(charts, "static_check") as static,
+            patch.object(charts.platform, "system", return_value="Linux"),
+            patch.object(charts.platform, "machine", return_value="x86_64"),
+            patch.object(charts, "run", side_effect=smoke) as run,
+        ):
+            report = charts.acceptance(self.args)
+        self.assertEqual(run.call_count, 2)
+        static.assert_not_called()
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(set(report["suites"]), {"distribution"})
+        self.assertTrue((self.args.output / "acceptance.json").exists())
+
+    def test_archive_acceptance_still_runs_all_three_full_suites(self):
+        item = self.acceptance_record(schema=2)["acceptance"]["archive"]["amd64"]
+
+        def smoke(*args, **kwargs):
+            if args[:2] == ("docker", "pull"):
+                return
+            self.assertNotIn("--distribution-only", args)
+            output = args[args.index("--artifacts") + 1]
+            result = item["suites"][output.name]
+            self.assertEqual(args[args.index("--sandbox") + 1], result["sandbox_mode"])
+            self.assertEqual("--network-only" in args, output.name == "network")
+            charts.write_json(output / "result.json", result)
+            charts.write_json(
+                output / "chromium-sandbox.json", result["sandbox_evidence"]
+            )
+
+        with (
+            patch.object(charts, "static_check") as static,
+            patch.object(charts.platform, "system", return_value="Linux"),
+            patch.object(charts.platform, "machine", return_value="x86_64"),
+            patch.object(charts, "run", side_effect=smoke) as run,
+        ):
+            report = charts.acceptance(self.args)
+        self.assertEqual(run.call_count, 4)
+        static.assert_called_once()
+        self.assertEqual(set(report["suites"]), {"enabled", "disabled", "network"})
+
+    def test_public_manifest_change_after_smoke_cannot_create_proof(self):
+        self.args.public = True
+        item = self.acceptance_record(schema=2)["acceptance"]["public"]["amd64"]
+        output = self.args.output / "distribution"
+        charts.write_json(output / "result.json", item["suites"]["distribution"])
+        charts.write_json(output / "chromium-sandbox.json", {"no_sandbox": False})
+        proof = self.args.output / "acceptance.json"
+        proof.write_text("stale success")
+        with (
+            patch.object(charts, "manifest", side_effect=[b"{}", b"{}", b"changed"]),
+            patch.object(charts, "pull", return_value=self.downloaded),
+            patch.object(charts.platform, "system", return_value="Linux"),
+            patch.object(charts.platform, "machine", return_value="x86_64"),
+            patch.object(charts, "run"),
+        ):
+            with self.assertRaisesRegex(ValueError, "manifest changed"):
+                charts.acceptance(self.args)
+        self.assertFalse(proof.exists())
+
+    def test_v2_recovery_preserves_valid_legacy_release_asset_bytes(self):
+        legacy = self.acceptance_record()
+        candidate = self.root / "chart-distribution.json"
+        charts.write_json(candidate, self.acceptance_record(schema=2))
+        original = (json.dumps(legacy) + "\n").encode()
+
+        def download(command, stdout, **kwargs):
+            stdout.write(original)
+
+        with patch("github_release.subprocess.run", side_effect=download):
+            recovered = reuse_chart_record(
+                "example/test",
+                {"assets": [{"id": 123, "name": "chart-distribution.json"}]},
+                candidate,
+                TAG,
+                REVISION,
+                DIGEST,
+                self.root / "recovered",
+            )
+        self.assertEqual(recovered.read_bytes(), original)
 
 
 if __name__ == "__main__":

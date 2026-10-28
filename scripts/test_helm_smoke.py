@@ -384,5 +384,101 @@ class PolicyFailureTest(unittest.TestCase):
         )
 
 
+class DistributionSmokeTest(unittest.TestCase):
+    def test_distribution_mode_requires_enabled_defaults_and_excludes_network(self):
+        for flags in (
+            ["--distribution-only"],
+            ["--distribution-only", "--chart-default-image", "--sandbox", "disabled"],
+            ["--distribution-only", "--chart-default-image", "--network-only"],
+        ):
+            with (
+                self.subTest(flags=flags),
+                patch.object(SMOKE, "run") as run,
+                patch("sys.stderr"),
+            ):
+                with self.assertRaises(SystemExit):
+                    SMOKE.parse_args(flags)
+                run.assert_not_called()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(
+                SMOKE,
+                "run",
+                return_value='{"image":{"repository":"webcappi","tag":"test"}}',
+            ),
+        ):
+            args = SMOKE.parse_args(["--distribution-only", "--chart-default-image"])
+        self.assertEqual(args.artifacts, SMOKE.ROOT / "artifacts/helm-distribution")
+
+    def test_distribution_checks_diagnostic_sandbox_without_lifecycle(self):
+        cluster = Mock()
+        cluster.policy.values = {"seccompProfile": {"type": "Localhost"}}
+        cluster.pods.return_value = ["sandbox-pod"]
+        args = argparse.Namespace(image="diagnostic:test")
+        with patch.object(SMOKE, "sandbox_evidence") as evidence:
+            SMOKE.distribution_smoke(cluster, args)
+        cluster.load.assert_called_once_with(args.image)
+        values = cluster.upgrade.call_args.args[1]
+        self.assertTrue(values["browser"]["sandbox"])
+        self.assertEqual(values["image"], SMOKE.image_values(args.image))
+        evidence.assert_called_once_with(cluster, "sandbox-pod", args)
+        cluster.uninstall.assert_called_once_with("sandbox")
+
+    def test_distribution_main_routes_checks_and_reports_success_only_after_cleanup(
+        self,
+    ):
+        for failure_at in (None, "capture", "sandbox", "cleanup", "interruption"):
+            with (
+                self.subTest(failure_at=failure_at),
+                tempfile.TemporaryDirectory() as temp,
+            ):
+                args = argparse.Namespace(
+                    image="webcappi:test",
+                    sandbox="enabled",
+                    artifacts=Path(temp),
+                    chart_default_image=True,
+                    distribution_only=True,
+                    network_only=False,
+                )
+                failure = (
+                    KeyboardInterrupt("interrupted")
+                    if failure_at == "interruption"
+                    else RuntimeError("failed")
+                )
+                with (
+                    patch.object(SMOKE, "parse_args", return_value=args),
+                    patch.object(SMOKE.platform, "system", return_value="Linux"),
+                    patch.object(SMOKE.platform, "machine", return_value="x86_64"),
+                    patch.object(SMOKE, "run", return_value="linux/amd64"),
+                    patch.object(SMOKE, "diagnostic_image"),
+                    patch.object(SMOKE, "Cluster") as cluster_type,
+                    patch.object(SMOKE, "default_image_capture") as capture,
+                    patch.object(SMOKE, "distribution_smoke") as distribution,
+                    patch.object(SMOKE, "suite") as lifecycle,
+                ):
+                    cluster = cluster_type.return_value
+                    if failure_at == "capture":
+                        capture.side_effect = failure
+                    if failure_at in ("sandbox", "interruption"):
+                        distribution.side_effect = failure
+                    if failure_at == "cleanup":
+                        cluster.__exit__.side_effect = failure
+                    if failure_at:
+                        with self.assertRaises(type(failure)):
+                            SMOKE.main()
+                    else:
+                        SMOKE.main()
+                    cluster.__exit__.assert_called_once()
+                    capture.assert_called_once()
+                    if failure_at == "capture":
+                        distribution.assert_not_called()
+                    else:
+                        distribution.assert_called_once()
+                    lifecycle.assert_not_called()
+                result = json.loads((args.artifacts / "result.json").read_text())
+                self.assertEqual(result["result"], "failed" if failure_at else "passed")
+                self.assertEqual(result["suite"], "distribution")
+
+
 if __name__ == "__main__":
     unittest.main()

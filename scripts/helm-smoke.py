@@ -1440,10 +1440,16 @@ def parse_args(argv=None):
     parser.add_argument(
         "--image", default=os.environ.get("WEBCAPPI_IMAGE", "webcappi:dev")
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--network-only",
         action="store_true",
         help="run real Ingress/Gateway acceptance with the sandbox enabled",
+    )
+    mode.add_argument(
+        "--distribution-only",
+        action="store_true",
+        help="only check distribution defaults and the enabled Chromium sandbox",
     )
     parser.add_argument("--chart", type=Path, default=ROOT / "charts/webcappi")
     parser.add_argument(
@@ -1464,6 +1470,12 @@ def parse_args(argv=None):
     for tool in ["helm", "kind", "kubectl"]:
         parser.add_argument("--" + tool, default=str(TOOLS / tool))
     args = parser.parse_args(argv)
+    if args.distribution_only and (
+        not args.chart_default_image or args.sandbox != "enabled"
+    ):
+        parser.error(
+            "distribution smoke requires --chart-default-image and --sandbox=enabled"
+        )
     if args.chart_default_image:
         import yaml
 
@@ -1486,7 +1498,13 @@ def parse_args(argv=None):
     if args.artifacts is None:
         args.artifacts = Path(
             os.environ.get("WEBCAPPI_ARTIFACTS_DIR", ROOT / "artifacts")
-        ) / ("helm-network" if args.network_only else f"helm-{args.sandbox}")
+        ) / (
+            "helm-distribution"
+            if args.distribution_only
+            else "helm-network"
+            if args.network_only
+            else f"helm-{args.sandbox}"
+        )
     args.artifacts = args.artifacts.resolve()
     return args
 
@@ -1500,6 +1518,13 @@ def write_result(args, result, error=None):
         "source_image": getattr(args, "source_image", args.image),
         "kubernetes": TOOL_SETTINGS["KUBERNETES_VERSION"],
         "platform": args.runtime_platform,
+        "suite": (
+            "distribution"
+            if getattr(args, "distribution_only", False)
+            else "network"
+            if getattr(args, "network_only", False)
+            else "lifecycle"
+        ),
     }
     report["network"] = getattr(args, "network_record", None)
     report["policy"] = getattr(args, "policy_record", None)
@@ -1548,6 +1573,21 @@ def default_image_capture(cluster, args):
     cluster.helm("uninstall", "distribution", "--wait", "--timeout", "90s")
 
 
+def distribution_smoke(cluster, args):
+    """Check active sandbox evidence separately from the standard-image capture."""
+    cluster.load(args.image)
+    cluster.upgrade(
+        "sandbox",
+        {
+            "image": image_values(args.image),
+            "browser": {"sandbox": True, **cluster.policy.values},
+            "auth": {"existingSecret": "api-auth", "tokenKey": "access-token"},
+        },
+    )
+    sandbox_evidence(cluster, cluster.pods("sandbox")[0], args)
+    cluster.uninstall("sandbox")
+
+
 def main():
     args = parse_args()
     native_arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(
@@ -1577,7 +1617,9 @@ def main():
                 with Cluster(args, Path(temporary)) as cluster:
                     if args.chart_default_image:
                         default_image_capture(cluster, args)
-                    if args.network_only:
+                    if args.distribution_only:
+                        distribution_smoke(cluster, args)
+                    elif args.network_only:
                         from helm_network import network_suite
 
                         network_suite(
