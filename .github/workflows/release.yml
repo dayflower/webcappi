@@ -34,21 +34,55 @@ jobs:
           "$RUNNER_TEMP/chart-metadata/bin/pip" install PyYAML==6.0.2
           "$RUNNER_TEMP/chart-metadata/bin/python" scripts/release-charts.py validate --tag "$RELEASE_TAG"
 
-  verify:
+  resolve:
+    name: Resolve verified CI candidate
     needs: validate
-    uses: ./.github/workflows/verify.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      mode: ${{ steps.candidate.outputs.mode }}
+      run_id: ${{ steps.candidate.outputs.run_id }}
+      run_attempt: ${{ steps.candidate.outputs.run_attempt }}
+      bundle_id: ${{ steps.candidate.outputs.bundle_id }}
+      qualification_id: ${{ steps.candidate.outputs.qualification_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install image inspector
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y skopeo
+      - name: Reuse an existing release or wait for the exact main push CI
+        id: candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_REVISION: ${{ needs.validate.outputs.revision }}
+        run: python3 scripts/ci_reuse.py resolve --version "$RELEASE_VERSION" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT"
+
+  candidate:
+    name: Rebuild and fully qualify unavailable candidate
+    needs: [validate, resolve]
+    if: needs.resolve.outputs.mode == 'fallback'
+    uses: ./.github/workflows/candidate.yml
     with:
       version: ${{ needs.validate.outputs.version }}
 
   publish:
     name: Publish verified image to GHCR
-    needs: [validate, verify]
+    needs: [validate, resolve, candidate]
+    if: ${{ !cancelled() && !failure() && needs.resolve.result == 'success' && (needs.candidate.result == 'success' || needs.candidate.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
       digest: ${{ steps.publish.outputs.digest }}
     permissions:
       contents: read
+      actions: read
       packages: write
     concurrency:
       group: ghcr-webcappi-publish
@@ -59,6 +93,11 @@ jobs:
       WEBCAPPI_VERSION: ${{ needs.validate.outputs.version }}
       WEBCAPPI_REVISION: ${{ needs.validate.outputs.revision }}
       WEBCAPPI_MODIFIED: "false"
+      CANDIDATE_MODE: ${{ needs.resolve.outputs.mode }}
+      CANDIDATE_RUN: ${{ needs.resolve.outputs.run_id || github.run_id }}
+      CANDIDATE_ATTEMPT: ${{ needs.resolve.outputs.run_attempt || needs.candidate.outputs.run_attempt }}
+      CANDIDATE_BUNDLE: ${{ needs.resolve.outputs.bundle_id || needs.candidate.outputs.bundle_id }}
+      CANDIDATE_QUALIFICATION: ${{ needs.resolve.outputs.qualification_id || needs.candidate.outputs.qualification_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,6 +107,32 @@ jobs:
           echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/webcappi-registry-auth.json" >> "$GITHUB_ENV"
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y skopeo
+      - name: Recheck the exact successful main CI attempt
+        if: env.CANDIDATE_MODE == 'reuse'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/ci_reuse.py verify-run --version "$WEBCAPPI_VERSION" --revision "$WEBCAPPI_REVISION" --run-id "$CANDIDATE_RUN" --run-attempt "$CANDIDATE_ATTEMPT"
+      - name: Download the selected qualified candidate
+        if: env.CANDIDATE_MODE != 'published'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ env.CANDIDATE_BUNDLE }}
+          run-id: ${{ env.CANDIDATE_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
+          merge-multiple: true
+      - name: Download the selected native qualification
+        if: env.CANDIDATE_MODE != 'published'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ env.CANDIDATE_QUALIFICATION }}
+          run-id: ${{ env.CANDIDATE_RUN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/qualification
+          merge-multiple: true
+      - name: Verify candidate checksums, OCI identity and both native receipts
+        if: env.CANDIDATE_MODE != 'published'
+        run: python3 scripts/ci_artifacts.py verify --qualification artifacts/qualification/qualification.json --run-id "$CANDIDATE_RUN" --run-attempt "$CANDIDATE_ATTEMPT" --bundle-id "$CANDIDATE_BUNDLE"
       - name: Authenticate to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,23 +146,16 @@ jobs:
               input=os.environ["GHCR_TOKEN"], text=True, check=True,
           )
           PY
-      - name: Check for an existing version
-        id: existing
-        run: python3 scripts/release.py check --tag "$WEBCAPPI_VERSION" --revision "$WEBCAPPI_REVISION" --github-output "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/build-artifacts
-        if: steps.existing.outputs.exists != 'true'
       - name: Publish archive and update latest
         id: publish
-        env:
-          REUSE_RELEASE: ${{ steps.existing.outputs.exists }}
         run: |
           options=()
-          if [[ "$REUSE_RELEASE" == true ]]; then
+          if [[ "$CANDIDATE_MODE" == published ]]; then
             options+=(--reuse)
           fi
           python3 scripts/release.py publish --tag "$WEBCAPPI_VERSION" --revision "$WEBCAPPI_REVISION" --github-output "$GITHUB_OUTPUT" "${options[@]}"
       - name: Upload release binaries and verification report
-        if: steps.existing.outputs.exists != 'true'
+        if: env.CANDIDATE_MODE != 'published'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-binaries-${{ github.ref_name }}-${{ github.run_attempt }}

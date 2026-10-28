@@ -151,7 +151,10 @@ select another executable or command, for example
 `main`, and manual dispatch. A newer run cancels the previous run for the same
 ref. Jobs have explicit timeouts and read-only repository permissions.
 [Reusable verification](../.github/workflows/verify.yml) supplies the checks,
-Go/Redis matrix and native browser/API matrix to both CI and Release. The shared
+Go/Redis matrix and native browser/API matrix. On main, the
+[candidate workflow](../.github/workflows/candidate.yml) first builds versioned
+artifacts, then verifies the exact exported images and seals their qualification.
+PRs retain the dev-image verification path. The shared
 [artifact build action](../.github/actions/build-artifacts/action.yml) supplies
 multi-platform builds and OCI verification.
 
@@ -159,8 +162,22 @@ multi-platform builds and OCI verification.
 | --- | --- | --- |
 | Formatting and static analysis | `make format-check lint`, `go vet ./...`, Actionlint v1.7.12, and Python build/release tests. | Linux amd64 |
 | Go and Redis | `GOFLAGS=-count=1 make test` and `make redis-test`, both with race detection. | Native Linux amd64 and arm64 |
-| Browser and API | `make image`, `make browser-test`, `python3 scripts/container-smoke.py`, and `python3 scripts/redis-smoke.py`, in sequence. | Native Linux amd64 and arm64 |
-| Multi-platform build | `make binaries`, `make image-multi`, and `python3 scripts/verify-build.py`. Runs after runtime checks, on `main` pushes and manual dispatch only. | Both target architectures; arm64 build steps use QEMU |
+| Browser and API | Load the candidate on main, or `make image` for PRs; then `make browser-test`, `python3 scripts/container-smoke.py`, and `python3 scripts/redis-smoke.py`, in sequence. | Native Linux amd64 and arm64 |
+| Multi-platform build | `make binaries`, `make image-multi`, and `python3 scripts/verify-build.py`. On main, runs before native verification to supply its exact images. Non-main manual builds still run after verification. | Both target architectures; arm64 build steps use QEMU |
+
+Main candidates derive `vX.Y.Z[-prerelease]` from matching chart `version` and
+`appVersion` fields, without changing local/PR version resolution. A candidate
+does not reserve or publish that version. Release tags remain authoritative and
+must match both candidate version and full source revision.
+
+The browser jobs download the candidate by its same-run artifact name, verify all
+file checksums, ELF/OCI identity and image labels, and load their native platform
+with Skopeo. The loaded image must match the OCI rootfs and execution config;
+Docker stores can report either a config ID or a manifest ID. Subsequent Helm
+evidence must identify that exact loaded image, with enabled/disabled/network and
+failure/interruption cleanup results all successful. Only successful native jobs
+upload qualification receipts. The sealing job requires both native platforms
+and completion of the entire verification workflow.
 
 The native runners are `ubuntu-24.04` and `ubuntu-24.04-arm`. The shared local
 setup action reads the exact Go version from the build stage in
@@ -179,9 +196,18 @@ Go dependency/build caches and architecture-specific Docker build caches reduce
 setup time. Tests still execute on every run. Each browser matrix job has a fresh
 artifact directory; it runs smoke scenarios without concurrent heavy builds.
 Screenshots and test logs are retained for seven days, including after failures.
-Synthetic browser profiles and the large OCI archive are not uploaded. Successful
-multi-platform jobs retain the CLI binaries and `build-verification.json` for
-seven days. Downloaded ZIP artifacts do not preserve executable permission bits.
+Synthetic browser profiles are not uploaded. Main candidates retain the OCI
+archive, both CLI binaries, `build-verification.json` and `candidate.json` for
+seven days in `release-candidate-<build-attempt>`. OCI layers are already
+compressed, so the artifact uses compression level 0. Small metadata, native
+runtime receipts and `release-qualification-<attempt>` are stored separately to
+avoid downloading the large bundle during selection/sealing. Checksums bind the
+qualified metadata to the complete bundle. Failed-job retries may reuse earlier
+successful native receipts only for the same candidate hash and workflow run;
+the latest qualification attempt pins the original build artifact ID. Downloaded
+ZIP artifacts do not preserve executable permission bits; verification reads ELF
+bytes and published CLI assets are recovered from OCI with their modes intact.
+CI qualification receipts are separate from chart distribution acceptance.
 
 The build verifier checks both ELF machine types, follows nested OCI indexes,
 excludes attestation descriptors, checks runtime descriptor/config agreement,
@@ -479,25 +505,43 @@ git tag -a v0.1.2 -m 'Release v0.1.2'
 git push origin v0.1.2
 ```
 
-The tag push starts release validation and the full reusable verification suite,
-including native amd64 and arm64 browser/API checks. Only after those pass does
-the publishing job build the versioned CLI binaries and multi-platform OCI
-archive. The build verifier checks both platform configurations, image labels
-and executable hashes against the exported CLI binaries. The archive is
-extracted into a temporary OCI directory without restoring file ownership
-(Python 3.12 or newer); Skopeo copies all platforms with preserved digests,
+The tag push validates the tag and chart metadata. A read-only resolver first
+reuses an identical already-published image for recovery. Otherwise it selects
+the matching main-push CI run and waits up to 60 minutes for completion, with a
+two-minute discovery grace for simultaneous main/tag pushes. Only this
+repository's `.github/workflows/ci.yml`, `push` event, main branch and exact
+source SHA are accepted. PR, fork and manual-dispatch runs cannot authorize a
+release. The successful run ID, attempt, candidate artifact ID and qualification
+artifact ID are pinned; an exact successful attempt is checked again before
+publication. API/authorization errors and version, SHA or evidence mismatches
+stop the release.
+
+Missing/expired artifacts, absent main CI after discovery, or a cancelled main
+run select a complete build-and-verification fallback through the same candidate
+workflow. A failed main CI or a wait timeout stops publication rather than
+bypassing verification. Normal reuse downloads the original OCI archive and CLI
+binaries without rebuilding or rerunning test suites. The publisher checks
+their checksums, both ELF/OCI platforms, image labels and both native receipts
+before registry authentication. If an artifact disappears after selection, the
+download fails safely; rerun all release jobs to resolve it again and use the
+full fallback if necessary. No Actions write permission or PAT is needed.
+
+The archive is extracted into a temporary OCI directory without restoring file
+ownership (Python 3.12 or newer); Skopeo copies all platforms with preserved digests,
 without rebuilding the image. The temporary directory is removed on failure
 or completion, and publication does not require running Skopeo as root.
 The published platform manifests and top-level digest are checked again. The
 final OCI archive is build-verified; native runtime qualification is supplied by
-the preceding browser/API jobs using the same source commit and build identity.
+browser/API jobs using the exact images from that archive.
 
 Image publishing uses `GITHUB_TOKEN` with `contents: read` and
 `packages: write`, confined to the image publishing job. The subsequent GitHub
-Release job has `contents: write` and `packages: read`; validation and native
-verification retain read-only repository access. No PAT is required. Registry credentials live
-in the runner's temporary directory and are removed after the job. The image's
-`org.opencontainers.image.source` label links it to this repository. GHCR creates
+Release job has `contents: write` and `packages: read`; the resolver/publisher also
+have `actions: read` for cross-run artifact access. Validation and native
+verification retain read-only repository access. No PAT is required. Registry
+credentials live in the runner's temporary directory and are removed after the
+job. The image's `org.opencontainers.image.source` label links it to this
+repository. GHCR creates
 new packages as private: after the first successful push, set the package
 visibility to public if anonymous pulls are intended, and check its repository
 Actions access. See [GitHub's Container registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
@@ -520,8 +564,10 @@ Actions artifacts for seven days. Chart-enabled tags next qualify the actual
 distribution archive, publish/reuse it, and qualify its anonymous download on
 both native architectures. Only then does the workflow call
 [GitHub Release](../.github/workflows/github-release.yml) with the verified tag,
-commit, image digest and chart acceptance artifact. The large OCI archive and
-synthetic browser profiles are not uploaded.
+commit, image digest and chart acceptance artifact. The candidate OCI archive is
+retained for seven days; synthetic browser profiles are not uploaded. Recovery
+of a published image and GitHub Release assets remains independent of Actions
+artifact retention.
 
 ### GitHub Release automation and recovery
 
@@ -1338,3 +1384,41 @@ The browser/REST outputs are under `artifacts/chart-public-smoke-browser/`, with
 logs in the published-smoke directory.
 Native arm64 and GitHub-hosted execution were not run locally. The timing is a
 local measurement; the next release must establish the workflow's actual saving.
+
+### CI candidate reuse verification
+
+On **2026-10-28 (Asia/Tokyo)**, validation used the implementation worktree based
+on `128873ce7324e07cf35120b0f563ac30ec0dd71b`, synthetic `v0.1.5` build metadata
+and a local test run identity. This did not create a release tag or publish an
+image. The application/browser sources and Dockerfile were unchanged.
+
+- With the pinned BuildKit and Go **1.26.10**, `make binaries`, `make image-multi`
+  and ELF/OCI verification passed for Linux amd64 and arm64. Both build-time
+  Chrome version checks passed; arm64 build steps used BuildKit's emulator.
+  `make image` also passed. The candidate's recorded index digest matched
+  Skopeo's publication-source digest without rebuilding.
+- The exact candidate was loaded on native **amd64** through the new consumer.
+  Browser/CDP, profile/REST, Redis, full enabled and explicitly disabled Helm
+  lifecycles, enabled Ingress/Gateway, and failure/SIGTERM cleanup passed. The
+  new runtime receipt matched the candidate hash, OCI config and loaded image;
+  its generation passed after all suites and cleanup. Existing standalone
+  browser/REST fixtures explicitly disable the sandbox; enabled Helm evidence
+  remains separate. Scoped nodes, AppArmor profiles and diagnostic images were
+  removed, and the dedicated validation builder was removed afterward.
+- All **107 Python tests**, Go race tests and vet, formatting/static analysis,
+  Actionlint and chart checks passed. Chart checks covered 39 valid and 101
+  rejected configurations, with 125 resources and no schema skips. Reuse tests
+  cover tampering, wrong version/SHA/run/attempt, PR/fork exclusion, failed CI,
+  discovery/wait deadlines, expired/removed artifacts and partial-job retries.
+- Read-only GitHub/GHCR probes confirmed a real successful main attempt, the
+  single-file artifact ZIP format and recovery of the existing published v0.1.5
+  independently of CI artifacts. These probes did not execute the new workflow.
+
+Logs and build reports are under `artifacts/ci-reuse-validation/`; complete native
+runtime outputs, `loaded.json`, `runtime.json`, `candidate.json` and per-stage
+timings are under `artifacts/ci-reuse-runtime-amd64/`. The fresh binaries and OCI
+archive remain under `/tmp/webcappi-ci-reuse-build-20261028/artifacts/`.
+Native arm64 runtime, GitHub-hosted candidate upload/download and the new release
+reuse/fallback graph were not executed. Cross-run transfer cost and release
+timings require the first hosted run; synthetic unit receipts are not runtime
+qualification for arm64.
