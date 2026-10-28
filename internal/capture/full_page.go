@@ -31,12 +31,9 @@ func (r Renderer) captureFullPage(ctx context.Context, req Request) ([]byte, err
 	if err := r.checkPageSize(sw, sh); err != nil {
 		return nil, err
 	}
-	w, h := req.OutputWidth, req.OutputHeight
-	if w == 0 {
-		w = sw
-	}
-	if h == 0 {
-		h = sh
+	w, h, err := req.OutputSize(sw, sh)
+	if err != nil {
+		return nil, fmt.Errorf("full-page output: %w", err)
 	}
 	if err := r.checkPageSize(w, h); err != nil {
 		return nil, fmt.Errorf("full-page output: %w", err)
@@ -63,7 +60,7 @@ func (r Renderer) captureFullPage(ctx context.Context, req Request) ([]byte, err
 	if algorithm == "" {
 		algorithm = ResizeBilinear
 	}
-	return resizePNG(ctx, shot.Data, w, h, algorithm)
+	return resizePNG(ctx, shot.Data, w, h, algorithm, req.OutputWidth != 0 && req.OutputHeight != 0)
 }
 
 func (r Renderer) maxWidth() int {

@@ -41,9 +41,10 @@ func (a ResizeAlgorithm) Validate() error {
 	return err
 }
 
-// resizePNG fills the output canvas proportionally and crops around the center.
+// resizePNG scales the complete image to the rounded output dimensions, or
+// fills the canvas proportionally and crops around the center when crop is true.
 // Decode and encode share the capture deadline, including cancellation.
-func resizePNG(ctx context.Context, data []byte, width, height int, algorithm ResizeAlgorithm) ([]byte, error) {
+func resizePNG(ctx context.Context, data []byte, width, height int, algorithm ResizeAlgorithm, crop bool) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -56,9 +57,13 @@ func resizePNG(ctx context.Context, data []byte, width, height int, algorithm Re
 		return nil, err
 	}
 	sw, sh := src.Bounds().Dx(), src.Bounds().Dy()
-	scale := max(float64(width)/float64(sw), float64(height)/float64(sh))
-	matrix := f64.Aff3{scale, 0, (float64(width) - float64(sw)*scale) / 2,
-		0, scale, (float64(height) - float64(sh)*scale) / 2}
+	matrix := f64.Aff3{float64(width) / float64(sw), 0, 0,
+		0, float64(height) / float64(sh), 0}
+	if crop {
+		scale := max(float64(width)/float64(sw), float64(height)/float64(sh))
+		matrix = f64.Aff3{scale, 0, (float64(width) - float64(sw)*scale) / 2,
+			0, scale, (float64(height) - float64(sh)*scale) / 2}
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

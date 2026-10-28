@@ -32,8 +32,8 @@ func TestDimensions(t *testing.T) {
 		{"full page output pixels", Input{FullPage: true, OutputWidth: ptr(4096), OutputHeight: ptr(4096)}, [4]int{}, "output exceeds configured limits"},
 		{"viewport width", Input{Width: ptr(800)}, [4]int{800, 720, 800, 720}, ""},
 		{"viewport height", Input{Height: ptr(480)}, [4]int{1280, 480, 1280, 480}, ""},
-		{"output width", Input{OutputWidth: ptr(400)}, [4]int{1280, 720, 400, 720}, ""},
-		{"output height", Input{OutputHeight: ptr(400)}, [4]int{1280, 720, 1280, 400}, ""},
+		{"output width", Input{OutputWidth: ptr(400)}, [4]int{1280, 720, 400, 225}, ""},
+		{"output height", Input{OutputHeight: ptr(400)}, [4]int{1280, 720, 711, 400}, ""},
 		{"minimum", Input{Width: ptr(1), Height: ptr(1), OutputWidth: ptr(1), OutputHeight: ptr(1)}, [4]int{1, 1, 1, 1}, ""},
 		{"viewport pixels", Input{Width: ptr(4096), Height: ptr(2048)}, [4]int{4096, 2048, 4096, 2048}, ""},
 		{"viewport height limit", Input{Width: ptr(2048), Height: ptr(4096)}, [4]int{2048, 4096, 2048, 4096}, ""},
@@ -42,6 +42,9 @@ func TestDimensions(t *testing.T) {
 		{"viewport width over", Input{Width: ptr(4097)}, [4]int{}, "viewport exceeds configured limits"},
 		{"viewport height over", Input{Height: ptr(4097)}, [4]int{}, "viewport exceeds configured limits"},
 		{"viewport pixels over", Input{Width: ptr(4096), Height: ptr(2049)}, [4]int{}, "viewport exceeds configured limits"},
+		{"derived height over", Input{Width: ptr(1), Height: ptr(720), OutputWidth: ptr(6)}, [4]int{}, "output exceeds configured limits"},
+		{"derived width over", Input{Width: ptr(1280), Height: ptr(1), OutputHeight: ptr(4)}, [4]int{}, "output exceeds configured limits"},
+		{"derived pixels over", Input{OutputWidth: ptr(4000)}, [4]int{}, "output exceeds configured limits"},
 		{"output width over", Input{OutputWidth: ptr(4097)}, [4]int{}, "output exceeds configured limits"},
 		{"output height over", Input{OutputHeight: ptr(4097)}, [4]int{}, "output exceeds configured limits"},
 		{"output pixels over", Input{OutputWidth: ptr(4096), OutputHeight: ptr(2049)}, [4]int{}, "output exceeds configured limits"},
@@ -54,7 +57,14 @@ func TestDimensions(t *testing.T) {
 				}
 				return
 			}
-			if got := [4]int{req.Width, req.Height, req.OutputWidth, req.OutputHeight}; err != nil || got != tc.want {
+			w, h := req.OutputWidth, req.OutputHeight
+			if !req.FullPage && err == nil {
+				w, h, err = req.OutputSize(req.Width, req.Height)
+			}
+			if tc.in.OutputWidth == nil && req.OutputWidth != 0 || tc.in.OutputHeight == nil && req.OutputHeight != 0 {
+				t.Fatal("normalization discarded output omissions")
+			}
+			if got := [4]int{req.Width, req.Height, w, h}; err != nil || got != tc.want {
 				t.Fatalf("dimensions = %v, error = %v, want %v", got, err, tc.want)
 			}
 		})

@@ -31,19 +31,25 @@ html,body{margin:0;width:100%;height:100%;background:red}
 	before := treeDigest(t, template)
 	renderer := Renderer{Browser: b, WorkDir: work, MaxProfileBytes: 512 << 20}
 	for _, tc := range []struct {
-		name, source string
-		algorithm    ResizeAlgorithm
+		name, source  string
+		algorithm     ResizeAlgorithm
+		width, height int
+		want          image.Rectangle
 	}{
-		{"url", "url", ""},
-		{HTMLModeFile, HTMLModeFile, ""},
-		{HTMLModeLoopback, HTMLModeLoopback, ""},
-		{"catmull-rom", HTMLModeFile, ResizeCatmullRom},
-		{"approx-bilinear", HTMLModeFile, ResizeApproxBilinear},
-		{"nearest-neighbor", HTMLModeFile, ResizeNearestNeighbor},
+		{"url", "url", "", 160, 160, image.Rect(0, 0, 160, 160)},
+		{HTMLModeFile, HTMLModeFile, "", 160, 160, image.Rect(0, 0, 160, 160)},
+		{HTMLModeLoopback, HTMLModeLoopback, "", 160, 160, image.Rect(0, 0, 160, 160)},
+		{"catmull-rom", HTMLModeFile, ResizeCatmullRom, 160, 160, image.Rect(0, 0, 160, 160)},
+		{"approx-bilinear", HTMLModeFile, ResizeApproxBilinear, 160, 160, image.Rect(0, 0, 160, 160)},
+		{"nearest-neighbor", HTMLModeFile, ResizeNearestNeighbor, 160, 160, image.Rect(0, 0, 160, 160)},
+		{"width only", "url", "", 160, 0, image.Rect(0, 0, 160, 100)},
+		{"height only", HTMLModeFile, "", 0, 100, image.Rect(0, 0, 160, 100)},
+		{"rounded width", HTMLModeLoopback, "", 161, 0, image.Rect(0, 0, 161, 101)},
+		{"enlarge height", HTMLModeFile, "", 0, 400, image.Rect(0, 0, 640, 400)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			renderer.ResizeAlgorithm = tc.algorithm
-			req := Request{Width: 320, Height: 200, OutputWidth: 160, OutputHeight: 160,
+			req := Request{Width: 320, Height: 200, OutputWidth: tc.width, OutputHeight: tc.height,
 				Profile: Profile{UserDataDir: template, ProfileDirectory: "Default"}}
 			if tc.source == "url" {
 				req.URL = server.URL
@@ -60,8 +66,17 @@ html,body{margin:0;width:100%;height:100%;background:red}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if img.Bounds() != image.Rect(0, 0, 160, 160) {
+			if img.Bounds() != tc.want {
 				t.Fatalf("unexpected PNG size: %v", img.Bounds())
+			}
+			if tc.width == 0 || tc.height == 0 {
+				if got := color.RGBAModel.Convert(img.At(tc.want.Dx()-2, tc.want.Dy()-2)); got != (color.RGBA{255, 0, 0, 255}) {
+					t.Fatalf("complete-image resize lost bottom-right corner: %v", got)
+				}
+				if got := color.RGBAModel.Convert(img.At(0, 0)); got != (color.RGBA{20, 180, 60, 255}) {
+					t.Fatalf("viewport layout changed: %v", got)
+				}
+				return
 			}
 			for _, pixel := range []struct {
 				x, y int

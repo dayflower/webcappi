@@ -247,3 +247,26 @@ func TestShutdownWaitsForCleanupAndCancelsQueue(t *testing.T) {
 		t.Fatal("active job did not report cancellation", err)
 	}
 }
+
+func TestSingleDimensionMetadataKey(t *testing.T) {
+	for _, fullPage := range []bool{false, true} {
+		for _, widthOnly := range []bool{false, true} {
+			single := request("http://fixture")
+			single.FullPage = fullPage
+			if widthOnly {
+				single.OutputWidth = 101
+			} else {
+				single.OutputHeight = 101
+			}
+			explicit := single
+			var err error
+			explicit.OutputWidth, explicit.OutputHeight, err = single.OutputSize(single.Width, single.Height)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if Key(single) == Key(explicit) {
+				t.Fatal("complete-image resizing shares a key with explicit center cropping")
+			}
+		}
+	}
+}

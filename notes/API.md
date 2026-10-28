@@ -83,12 +83,15 @@ is rejected.
 captured visible area by default. Use `full_page=true` to capture the full
 scrollable document while retaining this viewport for layout. Optional
 `output_width` and
-`output_height` set the PNG canvas dimensions in pixels; each omitted dimension
-defaults to the corresponding
-captured dimension (the viewport normally, or the measured full page when
-`full_page=true`). The captured image is resized proportionally to fill the
-output canvas, then cropped around the center. Different aspect ratios remove
-equal portions from the left/right or top/bottom, without stretching or adding
+`output_height` set the PNG canvas dimensions in pixels. When both are omitted,
+the captured dimensions are used (the viewport normally, or the measured full
+page when `full_page=true`). When only one is specified, the other is calculated
+from the captured image's aspect ratio, rounded to the nearest integer with
+halves rounded up and a minimum of one pixel. The complete image is resized to
+these dimensions without cropping; rounding can cause a small aspect-ratio
+difference. When both are specified, the captured image is resized proportionally
+to fill the output canvas, then cropped around the center. Different aspect
+ratios remove equal portions from the left/right or top/bottom, without stretching or adding
 padding. Scaling can enlarge or shrink the image, using bilinear filtering after
 capture by default. Set the server configuration
 `resize_algorithm` to `bilinear`, `catmull_rom`, `approx_bilinear` or
@@ -105,6 +108,8 @@ the original screenshot is returned without re-encoding.
 For example, `&width=1200&height=800&output_width=600&output_height=600` lays out
 the page at 1200 x 800, scales its image to 900 x 600, and removes 150 pixels
 from each side to return a 600 x 600 PNG.
+Setting only `output_width=600` instead returns the complete image at 600 x 400;
+setting only `output_height=400` produces the same dimensions.
 
 All four dimensions must be positive integers. Viewport and output dimensions
 are independently checked against the same `max_width`, `max_height` and
@@ -121,10 +126,12 @@ The CLI equivalent is `-full-page` (or `-full-page=false`).
 Full-page mode measures the scrollable document after the existing readiness
 checks and optional delay, then captures that bounded area at device scale 1.
 It includes horizontal document overflow and does not resize the viewport to
-match the document. Omitted output dimensions are resolved independently from
-the measured source: for example, setting only `output_width` keeps the full
-source height as the output height and applies the same fill-and-center-crop
-rule. Set both output dimensions for a proportional downscaled full-page image.
+match the document. A single output dimension scales the complete measured
+source, including horizontal overflow, while preserving its aspect ratio subject
+to integer rounding. For example, a 400 x 1200 source with `output_width=200` or
+`output_height=600` returns a 200 x 600 PNG, regardless of the viewport's aspect
+ratio. Both output dimensions select the same fill-and-center-crop rule as in
+viewport mode.
 
 The complete source and resolved output are checked against `max_width`,
 `max_height` and `max_pixels` before screenshot generation, regardless of output

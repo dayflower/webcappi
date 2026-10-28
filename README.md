@@ -67,8 +67,10 @@ curl --get http://localhost:8080/capture \
   --output full-page.png
 ```
 
-The viewport still determines layout. Omitted output dimensions use the full
-page dimensions; explicit output dimensions retain resizing and center cropping.
+The viewport still determines layout. Omit both output dimensions to keep the
+full-page size, or specify only `output_width` or `output_height` to scale the
+complete image using its captured aspect ratio. Specify both to resize and
+center crop.
 Omitted or empty `full_page` means `false`. This does not scroll to trigger lazy
 loading or expand nested scroll containers. The complete source and output must
 fit `max_width`, `max_height` and `max_pixels`, even when resizing down. The default
@@ -96,7 +98,7 @@ over local HTTP during capture.
 | --- | --- | --- |
 | `url` | HTTP(S) URL; required for GET, unavailable on POST | — |
 | `width`, `height` | Viewport size in CSS pixels | `1280`, `720` |
-| `output_width`, `output_height` | PNG dimensions after resizing and center cropping | Captured size |
+| `output_width`, `output_height` | PNG dimensions; one preserves the captured aspect ratio, both resize and center crop | Captured size |
 | `full_page` | Capture the full scrollable page; empty means `false` | `false` |
 | `profile` | Configured browser profile | `default` |
 | `ready_selector` | Wait for an element matching this CSS selector | — |
