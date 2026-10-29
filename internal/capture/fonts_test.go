@@ -15,7 +15,6 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/css"
-	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/chromedp"
 )
 
@@ -70,17 +69,14 @@ func TestRenderedFontFamilies(t *testing.T) {
 	if _, err = chromedp.Call(s.Context, css.Enable, cdp.Empty{}); err != nil {
 		t.Fatal(err)
 	}
-	document, err := chromedp.Call(s.Context, dom.GetDocument, dom.GetDocumentParams{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for i, tc := range cases {
 		t.Run(tc.family, func(t *testing.T) {
-			node, err := chromedp.Call(s.Context, dom.QuerySelector, dom.QuerySelectorParams{NodeID: document.Root.NodeID, Selector: fmt.Sprintf("#sample%d", i)})
+			// Let chromedp synchronize the node with DOM document updates.
+			nodes, err := chromedp.Run(s.Context, chromedp.Nodes(chromedp.CSS(fmt.Sprintf("#sample%d", i))))
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := chromedp.Call(s.Context, css.GetPlatformFontsForNode, css.GetPlatformFontsForNodeParams{NodeID: node.NodeID})
+			result, err := chromedp.Call(s.Context, css.GetPlatformFontsForNode, css.GetPlatformFontsForNodeParams{NodeID: nodes[0].NodeID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -125,10 +121,6 @@ func TestMultilingualRenderedFonts(t *testing.T) {
 	if _, err = chromedp.Call(s.Context, css.Enable, cdp.Empty{}); err != nil {
 		t.Fatal(err)
 	}
-	document, err := chromedp.Call(s.Context, dom.GetDocument, dom.GetDocumentParams{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct{ id, family string }{
 		{"latin", "Liberation Sans"},
 		{"ja", "Noto Sans CJK JP"},
@@ -144,11 +136,11 @@ func TestMultilingualRenderedFonts(t *testing.T) {
 		{"emoji", "Noto Color Emoji"},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
-			node, err := chromedp.Call(s.Context, dom.QuerySelector, dom.QuerySelectorParams{NodeID: document.Root.NodeID, Selector: "#sample-" + tc.id})
+			nodes, err := chromedp.Run(s.Context, chromedp.Nodes(chromedp.CSS("#sample-"+tc.id)))
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := chromedp.Call(s.Context, css.GetPlatformFontsForNode, css.GetPlatformFontsForNodeParams{NodeID: node.NodeID})
+			result, err := chromedp.Call(s.Context, css.GetPlatformFontsForNode, css.GetPlatformFontsForNodeParams{NodeID: nodes[0].NodeID})
 			if err != nil {
 				t.Fatal(err)
 			}
