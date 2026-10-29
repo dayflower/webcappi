@@ -24,8 +24,10 @@ runs:
           WEBCAPPI_MODIFIED=${{ env.WEBCAPPI_MODIFIED }}
         outputs: type=cacheonly
         cache-from: |
+          type=gha,scope=candidate
           type=gha,scope=runtime-amd64
           type=gha,scope=runtime-arm64
+        cache-to: type=gha,mode=max,scope=candidate
     - shell: bash
       run: make binaries
     - shell: bash

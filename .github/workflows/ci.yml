@@ -21,12 +21,38 @@ env:
   WEBCAPPI_MODIFIED: "false"
 
 jobs:
+  identity:
+    name: Resolve candidate version
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read matching chart version and appVersion
+        id: version
+        run: |
+          python3 -m venv "$RUNNER_TEMP/candidate-python"
+          "$RUNNER_TEMP/candidate-python/bin/pip" install PyYAML==6.0.2
+          "$RUNNER_TEMP/candidate-python/bin/python" scripts/ci_artifacts.py version --github-output "$GITHUB_OUTPUT"
+
+  candidate:
+    if: github.ref == 'refs/heads/main'
+    needs: identity
+    uses: ./.github/workflows/candidate.yml
+    with:
+      version: ${{ needs.identity.outputs.version }}
+
   verify:
+    if: github.ref != 'refs/heads/main'
     uses: ./.github/workflows/verify.yml
 
   build:
     name: Multi-platform build
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 45
