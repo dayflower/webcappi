@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"html/template"
 	"net/http"
+
+	"github.com/dayflower/webcappi/internal/buildinfo"
 )
 
 //go:embed index.html
@@ -13,6 +15,7 @@ var indexHTML string
 var indexTemplate = template.Must(template.New("index").Parse(indexHTML))
 
 type indexData struct {
+	Version               string
 	AuthEnabled           bool
 	MaxWidth              int
 	MaxHeight             int
@@ -22,7 +25,9 @@ type indexData struct {
 }
 
 func (a *API) index(w http.ResponseWriter) {
+	version, _, _ := buildinfo.Current()
 	data := indexData{
+		Version:               version,
 		AuthEnabled:           a.cfg.Auth != nil,
 		MaxWidth:              a.cfg.MaxWidth,
 		MaxHeight:             a.cfg.MaxHeight,
