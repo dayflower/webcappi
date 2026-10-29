@@ -47,6 +47,7 @@ class FakeReleases:
         self.tag, self.latest, self.current = tag, latest, None
         self.creates, self.patches, self.uploads = [], [], []
         self.fail_upload = None
+        self.restrict_workflow_targets = False
 
     def api(self, repo, method, path, payload=None, missing_ok=False):
         if method == "GET":
@@ -62,6 +63,8 @@ class FakeReleases:
                 return None
             return copy.deepcopy(self.current)
         if method == "POST":
+            if self.restrict_workflow_targets and "target_commitish" in payload:
+                raise PermissionError("Workflow modification permission required")
             self.creates.append(copy.deepcopy(payload))
             self.current = dict(
                 payload,
@@ -123,6 +126,7 @@ class GithubReleaseTest(unittest.TestCase):
     def publish(self, fake, assets):
         with (
             patch.object(github, "api", side_effect=fake.api),
+            patch.object(github, "resolve_tag", return_value=REVISION),
             patch.object(github.subprocess, "run", side_effect=fake.run),
             patch.dict(github.os.environ, {"GITHUB_STEP_SUMMARY": ""}),
         ):
@@ -256,6 +260,27 @@ class GithubReleaseTest(unittest.TestCase):
                 self.publish(fake, assets)
                 self.assertEqual(fake.patches[-1]["make_latest"], "false")
                 self.assertEqual(fake.current["prerelease"], "-" in tag)
+
+    def test_existing_tag_recovery_does_not_require_workflow_modification(self):
+        fake = FakeReleases()
+        fake.restrict_workflow_targets = True
+        self.publish(fake, self.assets())
+        self.assertFalse(fake.current["draft"])
+        self.assertEqual(fake.current["tag_name"], fake.tag)
+        self.assertIn(REVISION, fake.current["body"])
+
+    def test_tag_mismatch_stops_creation_before_remote_mutation(self):
+        fake = FakeReleases()
+        assets = self.assets()
+        with (
+            patch.object(github, "api", side_effect=fake.api),
+            patch.object(github, "resolve_tag", side_effect=ValueError("Tag differs")),
+        ):
+            with self.assertRaisesRegex(ValueError, "Tag differs"):
+                github.publish_github(
+                    "example/test", fake.tag, REVISION, IMAGE, self.inspected, assets
+                )
+        self.assertEqual(fake.creates, [])
 
     def test_published_asset_conflicts_and_immutable_missing_assets_fail(self):
         assets = self.assets()

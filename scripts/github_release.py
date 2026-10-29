@@ -285,13 +285,15 @@ def publish_github(repo, tag, revision, image, inspected, assets):
             current.get("body"), tag, revision, image, inspected["digest"], chart
         )
     else:
+        # Existing tags determine the source. Recheck before creation, then omit
+        # the tag-creation target, which triggers workflow permission checks.
+        resolve_tag(repo, tag, revision)
         current = api(
             repo,
             "POST",
             "releases",
             {
                 "tag_name": tag,
-                "target_commitish": revision,
                 "name": tag,
                 "draft": True,
                 "prerelease": prerelease,
