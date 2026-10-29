@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag with an already published image to recover
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -10,6 +16,7 @@ permissions:
 jobs:
   validate:
     name: Validate release identity
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -18,17 +25,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
       - name: Validate tag and main ancestry
         id: release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           RELEASE_REVISION: ${{ github.sha }}
-        run: python3 scripts/release.py validate --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT"
+          RECOVERY_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [[ "$RECOVERY_ONLY" == true ]]; then
+            RELEASE_REVISION="$(git rev-parse HEAD)"
+          fi
+          python3 scripts/release.py validate --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT"
       - name: Validate chart release metadata
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           python3 -m venv "$RUNNER_TEMP/chart-metadata"
           "$RUNNER_TEMP/chart-metadata/bin/pip" install PyYAML==6.0.2
@@ -62,7 +75,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_REVISION: ${{ needs.validate.outputs.revision }}
-        run: python3 scripts/ci_reuse.py resolve --version "$RELEASE_VERSION" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT"
+          RECOVERY_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          options=()
+          if [[ "$RECOVERY_ONLY" == true ]]; then
+            options+=(--published-only)
+          fi
+          python3 scripts/ci_reuse.py resolve --version "$RELEASE_VERSION" --revision "$RELEASE_REVISION" --github-output "$GITHUB_OUTPUT" "${options[@]}"
 
   candidate:
     name: Rebuild and fully qualify unavailable candidate
@@ -171,6 +190,7 @@ jobs:
   chart_archive:
     name: Qualify chart distribution archive
     needs: [validate, publish]
+    if: ${{ !cancelled() && !failure() && needs.validate.result == 'success' && needs.publish.result == 'success' }}
     uses: ./.github/workflows/chart-verify.yml
     permissions:
       contents: read
@@ -184,6 +204,7 @@ jobs:
   publish_chart:
     name: Publish verified chart to GHCR
     needs: [validate, publish, chart_archive]
+    if: ${{ !cancelled() && !failure() && needs.validate.result == 'success' && needs.publish.result == 'success' && needs.chart_archive.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -222,6 +243,7 @@ jobs:
   chart_public:
     name: Qualify anonymous chart distribution
     needs: [validate, publish, chart_archive, publish_chart]
+    if: ${{ !cancelled() && !failure() && needs.validate.result == 'success' && needs.publish.result == 'success' && needs.chart_archive.result == 'success' && needs.publish_chart.result == 'success' }}
     uses: ./.github/workflows/chart-verify.yml
     permissions:
       contents: read
@@ -236,6 +258,7 @@ jobs:
   github_release:
     name: Publish GitHub Release
     needs: [validate, publish, chart_public]
+    if: ${{ !cancelled() && !failure() && needs.validate.result == 'success' && needs.publish.result == 'success' && needs.chart_public.result == 'success' }}
     permissions:
       contents: write
       packages: read

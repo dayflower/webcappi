@@ -140,6 +140,8 @@ def resolve(args):
     )
     if published is not None:
         return {"mode": "published", "image_digest": published["digest"]}
+    if args.published_only:
+        raise ValueError("Recovery requires an already published matching image")
     started = time.monotonic()
     while True:
         query = urlencode(
@@ -174,6 +176,7 @@ def main():
     parser.add_argument("command", choices=("resolve", "verify-run"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--published-only", action="store_true")
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--run-attempt", type=int)
     parser.add_argument("--discovery-timeout", type=int, default=120)

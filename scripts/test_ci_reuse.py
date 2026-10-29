@@ -26,6 +26,7 @@ class CIReuseTest(unittest.TestCase):
             discovery_timeout=120,
             wait_timeout=3600,
             poll_interval=20,
+            published_only=False,
         )
         self.run = {
             "id": 100,
@@ -237,6 +238,7 @@ class CIReuseTest(unittest.TestCase):
             sleep.assert_called_once()
 
     def test_published_image_recovery_does_not_depend_on_ci_retention(self):
+        self.args.published_only = True
         with (
             patch.object(
                 reuse, "inspect_release", return_value={"digest": "sha256:published"}
@@ -248,6 +250,27 @@ class CIReuseTest(unittest.TestCase):
                 {"mode": "published", "image_digest": "sha256:published"},
             )
             api.assert_not_called()
+
+    def test_recovery_requires_existing_image_without_ci_or_fallback(self):
+        self.args.published_only = True
+        with (
+            patch.object(reuse, "inspect_release", return_value=None),
+            patch.object(reuse, "api") as api,
+        ):
+            with self.assertRaisesRegex(ValueError, "already published"):
+                reuse.resolve(self.args)
+            api.assert_not_called()
+
+    def test_recovery_does_not_ignore_image_identity_or_transport_errors(self):
+        self.args.published_only = True
+        for error in (ValueError("revision differs"), RuntimeError("HTTP 403")):
+            with (
+                patch.object(reuse, "inspect_release", side_effect=error),
+                patch.object(reuse, "api") as api,
+            ):
+                with self.assertRaises(type(error)):
+                    reuse.resolve(self.args)
+                api.assert_not_called()
 
     def test_qualification_zip_cannot_extract_extra_files(self):
         data = io.BytesIO()

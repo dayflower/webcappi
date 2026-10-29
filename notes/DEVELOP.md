@@ -936,7 +936,16 @@ delete or republish the chart. It also works
 after the original Actions artifacts expire.
 
 If publication never occurred, rerun the original tag's Release workflow after
-fixing its failure. If an identical package exists, rerunning that workflow
+fixing its failure. If the image was published but the tagged workflow cannot
+complete chart publication, run the current **Release → Run workflow → main**
+with that existing `tag`. Manual recovery validates the tag's own checkout and
+main ancestry, requires a published image matching its version and source, and
+never builds a replacement or falls back to a different CI commit. It reuses
+the image and runs full native archive acceptance before publishing the chart,
+then anonymous distribution smoke and GitHub Release creation. This also avoids
+moving an existing tag to repair its workflow definition.
+
+If an identical package exists, rerunning that workflow
 reuses it and records the actual registry digest/archive hash. If image or chart
 contents conflict, stop and release a new version. Never move tags or remove
 packages to reuse a version. If native acceptance fails, preserve evidence and
