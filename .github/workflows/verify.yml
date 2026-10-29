@@ -177,7 +177,7 @@ jobs:
       - name: Verify sandbox setup failure and interruption cleanup
         run: python3 scripts/sandbox/sandbox-cleanup-check.py --artifacts "$WEBCAPPI_ARTIFACTS_DIR/helm-cleanup"
       - name: Run Helm lifecycle tests (sandbox explicitly disabled)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.chart.outcome == 'success' }}
         run: python3 scripts/helm-smoke.py --chart "$CHART_ARCHIVE" --chart-default-image --sandbox disabled 2>&1 | tee "$WEBCAPPI_ARTIFACTS_DIR/helm-disabled.log"
         env:
           CHART_ARCHIVE: ${{ steps.chart.outputs.archive }}
