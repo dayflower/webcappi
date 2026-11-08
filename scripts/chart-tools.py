@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+from http.client import HTTPException
 import io
 from pathlib import Path
 import platform
@@ -58,8 +59,11 @@ SCHEMAS = {
 
 
 def fetch(url, checksum):
-    with urlopen(url, timeout=60) as response:
-        data = response.read()
+    try:
+        with urlopen(url, timeout=60) as response:
+            data = response.read()
+    except (OSError, HTTPException) as error:
+        raise RuntimeError(f"Download failed: {url}: {error}") from error
     if hashlib.sha256(data).hexdigest() != checksum:
         raise RuntimeError(f"checksum mismatch: {url}")
     return data
