@@ -72,6 +72,66 @@ class ReleaseTest(unittest.TestCase):
                 with release.oci_source(archive):
                     self.fail("OCI symlink accepted")
 
+    def test_raw_manifest_uses_ghcr_only_for_matching_registry(self):
+        references = (
+            ("docker://ghcr.io/example/test:0.1.0", True),
+            ("docker://ghcr.io.evil.example/example/test:0.1.0", False),
+            ("docker://ghcr.io@evil.example/example/test:0.1.0", False),
+            ("docker://user@ghcr.io/example/test:0.1.0", False),
+            ("docker://ghcr.io:443/example/test:0.1.0", False),
+            ("docker://evil.example/ghcr.io/example/test:0.1.0", False),
+            ("docker://evil.example/?next=docker://ghcr.io/test:0.1.0", False),
+            ("https://ghcr.io/example/test:0.1.0", False),
+            ("oci:/tmp/image", False),
+        )
+        for reference, matches in references:
+            with (
+                self.subTest(reference=reference),
+                patch.dict(release.os.environ, REGISTRY_AUTH_FILE="mock-auth.json"),
+                patch.object(release, "ghcr_manifest", return_value="ghcr") as ghcr,
+                patch.object(
+                    release.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, "skopeo", ""),
+                ) as skopeo,
+            ):
+                self.assertEqual(
+                    release.raw_manifest(reference, missing_ok=True),
+                    "ghcr" if matches else "skopeo",
+                )
+                if matches:
+                    ghcr.assert_called_once_with("ghcr.io/example/test:0.1.0")
+                    skopeo.assert_not_called()
+                else:
+                    ghcr.assert_not_called()
+                    skopeo.assert_called_once_with(
+                        ["skopeo", "inspect", "--raw", reference],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+
+    def test_raw_manifest_requires_missing_ok_and_auth_for_ghcr(self):
+        for missing_ok, auth in ((False, "mock-auth.json"), (True, "")):
+            with (
+                self.subTest(missing_ok=missing_ok, auth=auth),
+                patch.dict(release.os.environ, REGISTRY_AUTH_FILE=auth),
+                patch.object(release, "ghcr_manifest") as ghcr,
+                patch.object(
+                    release.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, "manifest", ""),
+                ) as skopeo,
+            ):
+                self.assertEqual(
+                    release.raw_manifest(
+                        "docker://ghcr.io/example/test:0.1.0", missing_ok=missing_ok
+                    ),
+                    "manifest",
+                )
+                ghcr.assert_not_called()
+                skopeo.assert_called_once()
+
     def test_ghcr_first_publication_and_authentication_errors(self):
         with tempfile.TemporaryDirectory() as directory:
             auth = Path(directory) / "auth.json"

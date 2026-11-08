@@ -75,12 +75,15 @@ def ghcr_manifest(image):
 
 
 def raw_manifest(reference, missing_ok=False):
+    parsed = urllib.parse.urlsplit(reference)
     if (
         missing_ok
-        and reference.startswith("docker://ghcr.io/")
+        and parsed.scheme == "docker"
+        and parsed.netloc == "ghcr.io"
+        and parsed.path.startswith("/")
         and os.environ.get("REGISTRY_AUTH_FILE")
     ):
-        return ghcr_manifest(reference.removeprefix("docker://"))
+        return ghcr_manifest(reference.partition("://")[2])
     result = subprocess.run(
         ["skopeo", "inspect", "--raw", reference],
         capture_output=True,
