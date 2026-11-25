@@ -70,6 +70,59 @@ content-script matches for `file:` URLs. Loopback mode requires content scripts
 to match HTTP on `127.0.0.1`; HTTPS-only or domain-specific scripts may not run.
 Secure-context status does not remove API-specific scheme or origin restrictions.
 
+## Capture metadata from posted HTML
+
+The optional POST-only `capture_metadata` query parameter works in `file` and
+`loopback` modes for both viewport and full-page captures. Its methods are
+case-sensitive.
+
+| Decoded parameter | Value returned |
+| --- | --- |
+| `textContent:#rss-capture-metadata` | The matching element's `textContent` |
+| `attributeValue:data-count:a[href^="/news/"]:first-of-type` | The matching element's `data-count` attribute |
+
+The text form splits at the first colon. The attribute form splits at the first
+two colons. The rest of the value is the CSS selector. Use `--url-query` to
+URL-encode the parameter and save headers and image separately.
+
+```sh
+curl --fail 'http://localhost:8080/capture' \
+  --header 'Content-Type: text/html; charset=utf-8' \
+  --data-binary @page.html \
+  --url-query 'capture_metadata=textContent:#rss-capture-metadata' \
+  --url-query 'ready_selector=#ready' \
+  --dump-header capture.headers \
+  --output capture.png
+```
+
+After the readiness checks and any `delay_ms`, Chromium reads the value from
+exactly one matching element in the current main document, including hidden
+elements. The read and screenshot are consecutive browser operations. Publish
+the value before signaling readiness, then keep the value and the rendered
+content stable through the capture. If you use output dimensions that cause
+cropping, account for that when interpreting the returned value.
+
+A successful response is HTTP 200 with an `image/png` body and
+`Webcappi-Capture-Metadata: b64url=<value>`. Strip `b64url=`, decode with an
+unpadded Base64URL decoder such as Go's `base64.RawURLEncoding`, and interpret
+the bytes as UTF-8. For example, `b64url=Mw` decodes to `3`. A present header
+with `b64url=` represents an empty string. Omitting the query parameter omits
+the header. Whitespace and line breaks are preserved, and unpaired UTF-16
+surrogates become U+FFFD. The decoded value is limited to 1024 UTF-8 bytes.
+Validate the decoded value for your application's use. POST responses use
+`Cache-Control: no-store`, and extraction results are used only for that response.
+
+GET requests with this parameter, repeats, empty values, malformed forms and
+unsupported methods return 400. Invalid CSS, zero or multiple matches, missing
+attributes and oversized values return 502. Errors return JSON without a
+metadata header.
+
+The extraction can expose hidden text and attributes. If posted HTML navigates
+the main frame, the document at capture time is the extraction source.
+Restrict profiles containing authenticated sessions or confidential data to
+trusted callers and enforce access through authentication, profile access
+controls and network isolation.
+
 ## Capture parameters and responses
 
 GET requires an absolute HTTP(S) `url` of at most 8192 bytes; all other query

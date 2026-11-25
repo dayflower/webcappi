@@ -26,17 +26,20 @@ func TestCaptureDelayAfterFrames(t *testing.T) {
 		fmt.Fprint(w, "unused")
 	}))
 	defer server.Close()
-	// Only the renderer requests animation frames. Schedule the color change
+	// Only the renderer requests animation frames. Schedule the DOM change
 	// after its second callback so a delay before asset checks cannot pass.
 	html := fmt.Sprintf(`<!doctype html><style>body{background:rgb(255,0,0)}</style>
-<body><script>
+<body><span id=metadata hidden>before delay</span><script>
 const raf = window.requestAnimationFrame.bind(window);
 let frames = 0;
 window.requestAnimationFrame = callback => raf(timestamp => {
  callback(timestamp);
  if (++frames === 2) {
    fetch('%s/frames', {mode:'no-cors'});
-   setTimeout(() => document.body.style.background = 'rgb(20,180,60)', 200);
+   setTimeout(() => {
+     document.body.style.background = 'rgb(20,180,60)';
+     document.querySelector('#metadata').textContent = 'after delay';
+   }, 200);
  }
 });
 </script>`, server.URL)
@@ -44,7 +47,8 @@ window.requestAnimationFrame = callback => raf(timestamp => {
 	renderer := Renderer{Browser: b, WorkDir: work, MaxProfileBytes: 512 << 20}
 	req := Request{
 		HTML: html, Width: 100, Height: 100, DelayMS: 600,
-		Profile: Profile{UserDataDir: t.TempDir(), ProfileDirectory: "Default"},
+		Profile:  Profile{UserDataDir: t.TempDir(), ProfileDirectory: "Default"},
+		Metadata: &MetadataRequest{Method: MetadataTextContent, Selector: "#metadata"},
 	}
 	for _, tc := range []struct {
 		mode     string
@@ -54,11 +58,14 @@ window.requestAnimationFrame = callback => raf(timestamp => {
 			req.HTMLMode, req.FullPage = tc.mode, tc.fullPage
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-			data, err := renderer.Capture(ctx, req)
+			result, err := renderer.CaptureWithMetadata(ctx, req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			img, err := png.Decode(bytes.NewReader(data))
+			if result.Metadata == nil || *result.Metadata != "after delay" {
+				t.Fatal("metadata was read before the delay elapsed")
+			}
+			img, err := png.Decode(bytes.NewReader(result.PNG))
 			if err != nil {
 				t.Fatal(err)
 			}
