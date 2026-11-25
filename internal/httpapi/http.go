@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dayflower/webcappi/internal/capture"
 	"github.com/dayflower/webcappi/internal/config"
@@ -153,6 +155,13 @@ func (a *API) capture(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
+	} else if req.Metadata != nil && img.Metadata != nil {
+		value := *img.Metadata
+		if len(value) > capture.MaxMetadataBytes || !utf8.ValidString(value) {
+			writeCaptureError(w, errors.New("invalid capture metadata result"), req.ProfileName)
+			return
+		}
+		w.Header().Set("Webcappi-Capture-Metadata", "b64url="+base64.RawURLEncoding.EncodeToString([]byte(value)))
 	}
 	writePNG(w, img.PNG)
 }

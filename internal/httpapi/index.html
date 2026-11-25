@@ -45,6 +45,7 @@
       <a href="#authentication">Authentication</a>
       {{end}}
       <a href="#parameters">Parameters</a>
+      <a href="#capture-metadata">Capture metadata</a>
       <a href="#behavior">Capture behavior</a>
       <a href="#errors">Errors</a>
     </nav>
@@ -92,6 +93,7 @@
           <tr><td><code>ready_selector</code></td><td>GET / POST</td><td>CSS selector for an element to wait for before capture. The element may be hidden. Omit to skip this additional check; maximum 1024 bytes.</td></tr>
           <tr><td><code>delay_ms</code></td><td>GET / POST</td><td>Additional wait after readiness checks, in milliseconds. Integer from 0 to 300000; defaults to 0.</td></tr>
           <tr><td><code>html_mode</code></td><td>POST only</td><td><code>file</code> (default) opens a temporary UTF-8 file. <code>loopback</code> serves the original document and uploaded <code>Content-Type</code> over temporary local HTTP.</td></tr>
+          <tr><td><code>capture_metadata</code></td><td>POST only</td><td>Read a matching element's text or attribute into the response header.</td></tr>
         </tbody>
       </table>
     </div>
@@ -111,6 +113,22 @@
   --data-urlencode 'delay_ms=1000' \
   --output capture.png</code></pre>
     <p>Replace the URL and selector with a page that provides your readiness signal. A missing selector match causes the request to time out.</p>
+  </section>
+
+  <section id="capture-metadata">
+    <h2>Capture metadata</h2>
+    <p>Use <code>textContent:&lt;selector&gt;</code> to read an element's text or <code>attributeValue:&lt;name&gt;:&lt;selector&gt;</code> to read an attribute. Method names are case-sensitive. The selector is the entire remainder after the first colon for text or the second colon for an attribute.</p>
+    <pre><code>curl --fail 'http://localhost:8080/capture' \
+  --header 'Content-Type: text/html; charset=utf-8' \
+  --data-binary @page.html \
+  --url-query 'capture_metadata=textContent:#rss-capture-metadata' \
+  --url-query 'ready_selector=#ready' \
+  --dump-header capture.headers \
+  --output capture.png</code></pre>
+    <p>In either HTML mode, webcappi reads the current main document after readiness checks and any delay, immediately before a viewport or full-page screenshot. Publish the value before signaling readiness, then keep the value and rendered content stable through capture. Account for output cropping when interpreting the value.</p>
+    <p>The response body is PNG. Read <code>Webcappi-Capture-Metadata</code>, remove the <code>b64url=</code> prefix, then decode the rest with an unpadded Base64URL decoder such as Go's <code>base64.RawURLEncoding</code>. For example, <code>b64url=Mw</code> decodes to <code>3</code>. The value is limited to 1024 UTF-8 bytes. Whitespace is preserved, and unpaired UTF-16 surrogates become U+FFFD. A header containing just <code>b64url=</code> represents an empty string. The header is absent when the parameter is omitted.</p>
+    <p>GET requests with this parameter, repeats and malformed values return 400. Invalid CSS, zero or multiple matches, a missing attribute or a value over the limit return 502. Errors omit the metadata header.</p>
+    <p>Extraction can expose hidden text and attributes, including from the document reached after main-frame navigation. Limit profiles containing authenticated sessions or confidential data to trusted callers using authentication, profile access controls and network isolation. Validate decoded values before use.</p>
   </section>
 
   <section id="behavior">
@@ -154,7 +172,7 @@
           <tr><td>405</td><td>Unsupported HTTP method.</td></tr>
           <tr><td>413</td><td>HTML body exceeds the configured limit.</td></tr>
           <tr><td>415</td><td>Unsupported HTML media type, charset or content encoding.</td></tr>
-          <tr><td>502</td><td>Browser, navigation, target HTTP status or asset failure.</td></tr>
+          <tr><td>502</td><td>Browser, navigation, target HTTP status, asset or capture metadata failure.</td></tr>
           <tr><td>503</td><td>Capacity exhausted, capture canceled or server shutting down. Overload responses include <code>Retry-After: 1</code>.</td></tr>
           <tr><td>504</td><td>Overall capture deadline exceeded.</td></tr>
         </tbody>

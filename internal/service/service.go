@@ -20,6 +20,7 @@ type RenderFunc func(context.Context, capture.Request) (capture.Result, error)
 
 type Image struct {
 	PNG         []byte
+	Metadata    *string
 	ETag        string
 	Source      *capture.SourceResponse
 	NotModified bool
@@ -130,7 +131,7 @@ func (s *Service) Get(ctx context.Context, req capture.Request) (*Image, error) 
 		return &Image{Source: result.Source, NotModified: true}, nil
 	}
 	h := sha256.Sum256(result.PNG)
-	return &Image{PNG: result.PNG, ETag: `"` + hex.EncodeToString(h[:]) + `"`, Source: result.Source}, nil
+	return &Image{PNG: result.PNG, Metadata: result.Metadata, ETag: `"` + hex.EncodeToString(h[:]) + `"`, Source: result.Source}, nil
 }
 
 func (s *Service) Close() {

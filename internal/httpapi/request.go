@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/dayflower/webcappi/internal/capture"
 	"github.com/dayflower/webcappi/internal/captureinput"
@@ -25,6 +26,7 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 	if r.Method == http.MethodPost {
 		delete(allowed, "url")
 		allowed["html_mode"] = true
+		allowed["capture_metadata"] = true
 	}
 	for key, values := range q {
 		if !allowed[key] || len(values) != 1 {
@@ -38,6 +40,12 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 				return req, errors.New("html_mode must be file or loopback")
 			}
 			req.HTMLMode = values[0]
+		}
+		if values, ok := q["capture_metadata"]; ok {
+			req.Metadata, err = parseCaptureMetadata(values[0])
+			if err != nil {
+				return req, err
+			}
 		}
 	}
 	in := captureinput.Input{ReadySelector: q.Get("ready_selector")}
@@ -77,5 +85,25 @@ func (a *API) parse(r *http.Request) (capture.Request, error) {
 		DefaultProfileName: config.DefaultProfileName, Profiles: a.cfg.Profiles,
 	})
 	validated.HTMLMode = req.HTMLMode
+	validated.Metadata = req.Metadata
 	return validated, err
+}
+
+func parseCaptureMetadata(value string) (*capture.MetadataRequest, error) {
+	method, selector, _ := strings.Cut(value, ":")
+	var attribute string
+	switch method {
+	case capture.MetadataTextContent:
+	case capture.MetadataAttributeValue:
+		attribute, selector, _ = strings.Cut(selector, ":")
+		if attribute == "" {
+			return nil, errors.New("capture_metadata requires an attribute name")
+		}
+	default:
+		return nil, errors.New("invalid capture_metadata method")
+	}
+	if selector == "" {
+		return nil, errors.New("capture_metadata requires a selector")
+	}
+	return &capture.MetadataRequest{Method: method, Selector: selector, Attribute: attribute}, nil
 }

@@ -42,6 +42,7 @@ type Request struct {
 	ReadySelector   string
 	DelayMS         int
 	FullPage        bool
+	Metadata        *MetadataRequest
 	Revalidate      *SourceResponse
 }
 
@@ -119,6 +120,7 @@ type SourceResponse struct {
 
 type Result struct {
 	PNG         []byte
+	Metadata    *string
 	Source      *SourceResponse
 	NotModified bool
 }
@@ -128,7 +130,7 @@ func (r Renderer) Capture(ctx context.Context, req Request) ([]byte, error) {
 	return result.PNG, err
 }
 
-// CaptureWithMetadata renders a fresh PNG and returns its source response policy.
+// CaptureWithMetadata returns the PNG, source response policy and any requested DOM metadata.
 func (r Renderer) CaptureWithMetadata(ctx context.Context, req Request) (result Result, err error) {
 	work, err := os.MkdirTemp(r.WorkDir, "capture-")
 	if err != nil {
@@ -217,7 +219,7 @@ func (r Renderer) CaptureWithMetadata(ctx context.Context, req Request) (result 
 		}
 	}
 	if req.FullPage {
-		result.PNG, err = r.captureFullPage(tab, req)
+		result.PNG, result.Metadata, err = r.captureFullPage(tab, req)
 		return result, err
 	}
 	w, h, err := req.OutputSize(req.Width, req.Height)
@@ -226,6 +228,10 @@ func (r Renderer) CaptureWithMetadata(ctx context.Context, req Request) (result 
 	}
 	if err := r.checkPageSize(w, h); err != nil {
 		return result, fmt.Errorf("output: %w", err)
+	}
+	result.Metadata, err = readCaptureMetadata(tab, req.Metadata)
+	if err != nil {
+		return result, err
 	}
 	png, err := chromedp.Run(tab, chromedp.CaptureScreenshot())
 	if err != nil {
