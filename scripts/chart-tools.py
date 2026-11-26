@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import subprocess
 import tarfile
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,6 +68,20 @@ def fetch(url, checksum):
     if hashlib.sha256(data).hexdigest() != checksum:
         raise RuntimeError(f"checksum mismatch: {url}")
     return data
+
+
+def fetch_apparmor(arch, checksum):
+    path = f"/pool/main/a/apparmor/apparmor_{APPARMOR_VERSION}_{arch}.deb"
+    if arch == "arm64":
+        return fetch(f"https://ports.ubuntu.com/ubuntu-ports{path}", checksum)
+    try:
+        return fetch(f"https://archive.ubuntu.com/ubuntu{path}", checksum)
+    except RuntimeError as error:
+        cause = error.__cause__
+        if not isinstance(cause, HTTPError) or cause.code != 403:
+            raise
+        print(f"{error}; trying the Ubuntu security mirror")
+        return fetch(f"https://security.ubuntu.com/ubuntu{path}", checksum)
 
 
 def write(path, data, executable=False):
@@ -131,18 +146,7 @@ def main():
         not archive_path.exists()
         or hashlib.sha256(archive_path.read_bytes()).hexdigest() != checksum
     ):
-        mirror = (
-            "archive.ubuntu.com/ubuntu"
-            if arch == "amd64"
-            else "ports.ubuntu.com/ubuntu-ports"
-        )
-        write(
-            archive_path,
-            fetch(
-                f"https://{mirror}/pool/main/a/apparmor/apparmor_{APPARMOR_VERSION}_{arch}.deb",
-                checksum,
-            ),
-        )
+        write(archive_path, fetch_apparmor(arch, checksum))
     data = subprocess.run(
         ["dpkg-deb", "--fsys-tarfile", str(archive_path)],
         check=True,
